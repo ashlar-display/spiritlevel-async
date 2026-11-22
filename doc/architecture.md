@@ -248,8 +248,8 @@ usable, and what to do next depends on the call dropped:
 
 - **A dropped `bring_up` or `quick_restore`:** call `tear_down` before anything else, with
   the link the dropped call was given. Turn on `clear_sink` when the next link will not
-  write `TMDS_Config` again, as before FRL training; a `quick_restore` may instead simply
-  be called again.
+  write `TMDS_Config` again, as before FRL training (spiritlevel's architecture,
+  "Tear-down", gives the sources); a `quick_restore` may instead simply be called again.
 - **A dropped `tear_down`:** call it again.
 - **A dropped `check_reconnect`:** nothing; it only reads.
 
@@ -299,8 +299,9 @@ The compile-time test covers all three.
 
 - **Clock and delay from `embassy-time`:** `now` is `Timestamp::from_micros(Instant::now()
   .as_micros())`, the delay `Timer::after_micros(…)` with the duration rounded up to whole
-  microseconds. The default 1 MHz tick is well inside the millisecond the procedures need,
-  and `Timer`'s futures are `Send`, so `SendDelay` holds.
+  microseconds. The default 1 MHz tick is well inside the procedures' 1 ms defaults
+  (`ratio_wait` and `check_interval`, cited in spiritlevel's architecture, "Bring-up" and
+  "The scrambling check"), and `Timer`'s futures are `Send`, so `SendDelay` holds.
 - **Events into a channel:** the callback runs between `.await`s and cannot await, so it
   hands each event on with `embassy_sync::channel::Channel::try_send`, the channel sized
   from the procedure's maximum and drained between calls. A failed `try_send` is counted,
@@ -320,9 +321,9 @@ The compile-time test covers all three.
   an `Arc<AtomicBool>` is passed as `with_cancel(&*flag)` inside the task: `Cancel` is
   implemented for the `AtomicBool` and references to it, not for the `Arc`.
 - **Timing is correct, not exact:** `tokio::time::sleep` rounds up to its millisecond
-  granularity, so a 1 ms interval polls less often (a delay promises "at least"), and a
-  loaded runtime may wake late, which the outcome reports (a later output start, at worst a
-  missed-deadline warning).
+  granularity, so the default 1 ms `check_interval` (spiritlevel's, cited there) polls less
+  often (a delay promises "at least"), and a loaded runtime may wake late, which the
+  outcome reports (a later output start, at worst a missed-deadline warning).
 - **The clock is tokio's `Instant`,** measured from a start `tokio::time::Instant`: the
   same timebase as `sleep`, so the clock advances by at least each delay, as `Delay`
   requires, also under `tokio::time::pause()` in tests. `std`'s `Instant` does not advance

@@ -41,7 +41,9 @@ is fine.
   is one; the compile-time `Send` test covers each new method.
 - This crate makes no claim about HDMI behaviour of its own: a change to what a procedure
   does, its settings or its defaults belongs in spiritlevel, where each such claim cites at
-  least two independent public implementations.
+  least two independent public implementations. Where these docs rely on one of those
+  claims (a default, a timing, when a step is needed), they point to spiritlevel's section
+  that cites it rather than repeating or restating it.
 
 ## Commit and PR expectations
 
