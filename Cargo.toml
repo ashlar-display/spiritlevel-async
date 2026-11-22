@@ -1,0 +1,30 @@
+[package]
+name = "spiritlevel-async"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Async TMDS link bring-up for HDMI sources: clock ratio, scrambling and sink configuration"
+readme = "README.md"
+license = "MPL-2.0"
+repository = "https://github.com/ashlar-display/spiritlevel-async"
+homepage = "https://ashlar-display.org"
+keywords = ["ashlar", "hdmi", "no-std", "tmds", "async"]
+categories = ["hardware-support", "embedded", "no-std", "no-std::no-alloc", "asynchronous"]
+include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["display-types"]
+display-types = ["spiritlevel/display-types"]
+culvert-async = ["dep:culvert-async"]
+
+[dependencies]
+spiritlevel = { version = "0.2", default-features = false }
+hdmi-hal-async = { version = "0.4", default-features = false }
+culvert-async = { version = "0.4.1", default-features = false, optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
