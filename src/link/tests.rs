@@ -19,10 +19,10 @@ use std::vec::Vec;
 use super::TmdsLink;
 use crate::{
     BringUpConfig, BringUpOutcome, Cancel, CancelPoint, CheckResult, Cleanup, Clock, ClockRatio,
-    ColorBitDepth, ColorFormat, DdcErrorKind, Delay, NoCancel, ScramblingStatus, SinkClear,
-    SinkPresence, SinkTmdsConfig, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, Timestamp,
-    TmdsConfigReading, TmdsEvent, TmdsEventKind, TmdsLinkParams, TmdsPhy, TmdsPhyCapabilities,
-    TmdsPhyConfig, TmdsPolicy, TmdsScdc, TmdsVideo, UpdateError,
+    ColorBitDepth, ColorFormat, DdcErrorKind, Delay, NoCancel, ReconnectCheck, RestoreError,
+    ScramblingStatus, SinkClear, SinkPresence, SinkTmdsConfig, SinkTmdsFacts, SourceTmdsFacts,
+    TearDownConfig, Timestamp, TmdsConfigReading, TmdsEvent, TmdsEventKind, TmdsLinkParams,
+    TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsPolicy, TmdsScdc, TmdsVideo, UpdateError,
 };
 
 /// Polls `future` to completion with a no-op waker, returning its output and how many times
@@ -109,7 +109,7 @@ struct Sink<'a> {
     source_version: u8,
     flt_update: bool,
     scrambling_status: bool,
-    /// Writes of `TMDS_Config` fail with this.
+    /// Reads and writes of `TMDS_Config` fail with this.
     fail_tmds_config: Option<DdcErrorKind>,
 }
 
@@ -154,6 +154,9 @@ impl TmdsScdc for Sink<'_> {
 
     async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, DdcErrorKind> {
         self.log.call(Call::ReadTmdsConfig).await;
+        if let Some(error) = self.fail_tmds_config {
+            return Err(error);
+        }
         let raw = self.tmds_config;
         Ok(TmdsConfigReading::new(
             SinkTmdsConfig::new(raw & 1 != 0, raw & 2 != 0),
@@ -531,14 +534,20 @@ fn the_plain_bring_up_on_a_plain_link() {
     let time = SimTime::at(&log, 0);
     let mut link = TmdsLink::new(Sink::new(&log), Phy::new(&log), &time, &time);
 
-    let (outcome, _) = run(link.bring_up(&plain(), video(148_500), &BringUpConfig::DEFAULT));
+    // `Source_Version` only after reading `Sink_Version`, so that call is made too.
+    let config =
+        BringUpConfig::DEFAULT.with_source_version(crate::SourceVersionWrite::IfSinkVersion1);
+    let (outcome, _) = run(link.bring_up(&plain(), video(148_500), &config));
 
     let Ok(BringUpOutcome::Up(up)) = outcome else {
         panic!("not up: {outcome:?}");
     };
     assert_eq!(up.check.result, CheckResult::NotApplicable);
-    assert!(!log.calls().contains(&Call::ReadScramblingStatus));
+    let calls = log.calls();
+    assert!(!calls.contains(&Call::ReadScramblingStatus));
+    assert!(calls.contains(&Call::ReadSinkVersion));
     let (sink, phy, ..) = link.into_parts();
+    assert_eq!(sink.source_version, 1, "written after the sink reported 1");
     assert_eq!(sink.tmds_config & 0x03, 0, "neither bit set");
     assert!(phy.output && !phy.scrambling);
     assert_eq!(
@@ -591,4 +600,142 @@ fn a_flag_set_during_the_bring_up_stops_it_after_its_tear_down() {
         "torn down last"
     );
     assert!(!link.phy().output);
+}
+
+// The reconnect check.
+
+#[test]
+fn check_reconnect_reads_the_sink_once() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let mut sink = Sink::new(&log);
+    sink.tmds_config = 0x03;
+    let mut link = TmdsLink::new(sink, Phy::new(&log), &time, &time);
+    let params = scrambled();
+
+    let mut events: Vec<TmdsEvent> = Vec::new();
+    let (result, suspensions) =
+        run(link
+            .check_reconnect_with_events(&params, params.sink(), &mut |event| events.push(event)));
+    assert_eq!(result, ReconnectCheck::Matches);
+    assert!(suspensions > 0, "the read suspended");
+    assert_eq!(log.calls(), [Call::ReadTmdsConfig]);
+    assert!(!events.is_empty() && events.len() <= crate::MAX_RECONNECT_CHECK_EVENTS);
+
+    // The sink lost its bits: reported with the byte read, nothing written.
+    link.scdc_mut().tmds_config = 0x00;
+    let (result, _) = run(link.check_reconnect(&params, params.sink()));
+    let ReconnectCheck::Lost { read, .. } = result else {
+        panic!("not lost: {result:?}");
+    };
+    assert_eq!(read.raw, 0x00);
+    assert_eq!(log.calls(), [Call::ReadTmdsConfig, Call::ReadTmdsConfig]);
+}
+
+#[test]
+fn check_reconnect_on_a_changed_or_unreadable_sink() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let mut sink = Sink::new(&log);
+    sink.fail_tmds_config = Some(DdcErrorKind::Detached);
+    let mut link = TmdsLink::new(sink, Phy::new(&log), &time, &time);
+    let params = scrambled();
+
+    let (result, _) = run(link.check_reconnect(&params, SinkTmdsFacts::NONE));
+    assert_eq!(result, ReconnectCheck::SinkChanged);
+    assert!(log.calls().is_empty(), "nothing read");
+
+    let (result, _) = run(link.check_reconnect(&params, params.sink()));
+    assert_eq!(result, ReconnectCheck::Unreadable(DdcErrorKind::Detached));
+}
+
+// The quick restore.
+
+/// A running scrambled link whose sink lost its `TMDS_Config` and whose source lost its
+/// scrambler state.
+fn running_after_a_loss(log: &Log) -> (Sink<'_>, Phy<'_>) {
+    let mut sink = Sink::new(log);
+    sink.scrambling_status = true;
+    let mut phy = Phy::new(log);
+    phy.output = true;
+    (sink, phy)
+}
+
+#[test]
+fn quick_restore_rewrites_the_sink_with_the_output_running() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let (sink, phy) = running_after_a_loss(&log);
+    let mut link = TmdsLink::new(sink, phy, &time, &time);
+
+    let mut events: Vec<TmdsEvent> = Vec::new();
+    let (result, suspensions) = run(link.quick_restore_with_events(
+        &scrambled(),
+        &BringUpConfig::DEFAULT,
+        &mut |event| events.push(event),
+    ));
+
+    let restored = result.unwrap();
+    assert_eq!(restored.check.result, CheckResult::Set);
+    assert!(restored.sink_written_at.is_some());
+    assert!(suspensions > 0, "the procedure suspended on the I/O");
+    assert!(events.len() <= crate::MAX_QUICK_RESTORE_EVENTS);
+    let calls = log.calls();
+    assert_eq!(
+        calls[..2],
+        [
+            Call::UpdateTmdsConfig(SinkTmdsConfig::new(true, true)),
+            Call::SetScrambling(true),
+        ]
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, Call::StopOutput | Call::Configure(_))),
+        "the output keeps running at its rate"
+    );
+    let (sink, phy, ..) = link.into_parts();
+    assert_eq!(sink.tmds_config, 0x03);
+    assert!(phy.output && phy.scrambling);
+}
+
+#[test]
+fn a_set_flag_stops_only_the_restores_check() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let flag = AtomicBool::new(true);
+    let (sink, phy) = running_after_a_loss(&log);
+    let mut link = TmdsLink::new(sink, phy, &time, &time).with_cancel(&flag);
+
+    let (result, _) = run(link.quick_restore(&scrambled(), &BringUpConfig::DEFAULT));
+
+    assert_eq!(result.unwrap().check.result, CheckResult::Cancelled);
+    assert!(!log.calls().contains(&Call::ReadScramblingStatus));
+    let (sink, phy, ..) = link.into_parts();
+    assert_eq!(sink.tmds_config, 0x03, "the write is made");
+    assert!(phy.output && phy.scrambling, "the link is left running");
+}
+
+#[test]
+fn quick_restore_passes_the_sinks_error_through() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let (mut sink, phy) = running_after_a_loss(&log);
+    sink.fail_tmds_config = Some(DdcErrorKind::Detached);
+    let mut link = TmdsLink::new(sink, phy, &time, &time);
+
+    let (result, _) = run(link.quick_restore(&scrambled(), &BringUpConfig::DEFAULT));
+
+    assert!(matches!(
+        result,
+        Err(RestoreError::Scdc(UpdateError::Write(
+            DdcErrorKind::Detached
+        )))
+    ));
+    assert_eq!(
+        log.calls(),
+        [Call::UpdateTmdsConfig(SinkTmdsConfig::new(true, true))],
+        "nothing follows the failed write"
+    );
+    assert!(link.phy().output, "no tear-down: the link was running");
 }

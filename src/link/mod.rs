@@ -6,15 +6,22 @@ use core::time::Duration;
 use spiritlevel::procedure::{self, TmdsIo};
 
 use crate::{
-    BringUpConfig, BringUpError, BringUpOutcome, Cancel, Clock, Delay, NoCancel, ScramblingStatus,
-    SinkPresence, SinkTmdsConfig, TearDownConfig, TearDownError, Timestamp, TmdsConfigReading,
-    TmdsEvent, TmdsLinkParams, TmdsPhy, TmdsPhyConfig, TmdsScdc, TmdsVideo, TornDown, UpdateError,
+    BringUpConfig, BringUpError, BringUpOutcome, Cancel, Clock, Delay, NoCancel, ReconnectCheck,
+    RestoreError, Restored, ScramblingStatus, SinkPresence, SinkTmdsConfig, SinkTmdsFacts,
+    TearDownConfig, TearDownError, Timestamp, TmdsConfigReading, TmdsEvent, TmdsLinkParams,
+    TmdsPhy, TmdsPhyConfig, TmdsScdc, TmdsVideo, TornDown, UpdateError,
 };
 
 /// What a bring-up returns, over the parts' error types.
 type BringUpResult<S, P> = Result<
     BringUpOutcome<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
     BringUpError<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
+>;
+
+/// What a quick restore returns, over the parts' error types.
+type RestoreResult<S, P> = Result<
+    Restored<<S as TmdsScdc>::Error>,
+    RestoreError<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
 >;
 
 /// What a tear-down returns, over the parts' error types.
@@ -175,6 +182,66 @@ impl<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel> TmdsLink<S, P, K, D
         record: &mut impl FnMut(TmdsEvent),
     ) -> BringUpResult<S, P> {
         procedure::bring_up(&mut AsyncIo(self), link, video, config, record).await
+    }
+
+    /// Checks whether the sink still holds the `TMDS_Config` `link` needs, given the sink's
+    /// facts now; see [`procedure::check_reconnect`].
+    ///
+    /// Not stopped by the cancel flag: it is one read. A dropped check needs nothing done
+    /// after it, since it only reads.
+    pub async fn check_reconnect(
+        &mut self,
+        link: &TmdsLinkParams,
+        current_sink: SinkTmdsFacts,
+    ) -> ReconnectCheck<S::Error> {
+        self.check_reconnect_with_events(link, current_sink, &mut |_| {})
+            .await
+    }
+
+    /// [`check_reconnect`](Self::check_reconnect), calling `record` with each event, at most
+    /// [`MAX_RECONNECT_CHECK_EVENTS`](crate::MAX_RECONNECT_CHECK_EVENTS).
+    pub async fn check_reconnect_with_events(
+        &mut self,
+        link: &TmdsLinkParams,
+        current_sink: SinkTmdsFacts,
+        record: &mut impl FnMut(TmdsEvent),
+    ) -> ReconnectCheck<S::Error> {
+        procedure::check_reconnect(&mut AsyncIo(self), link, current_sink, record).await
+    }
+
+    /// Restores the sink's `TMDS_Config` on the running link `link` without a new bring-up;
+    /// see [`procedure::quick_restore`], which says which settings of `config` it reads and
+    /// where the cancel flag is read.
+    ///
+    /// Stop it through the cancel flag, never by dropping its future. After a dropped one,
+    /// call it again, or [`tear_down`](Self::tear_down) with the same `link`.
+    ///
+    /// # Errors
+    ///
+    /// [`RestoreError`] when the sink's write or the scrambler call failed in a way that
+    /// stops it; no tear-down follows.
+    pub async fn quick_restore(
+        &mut self,
+        link: &TmdsLinkParams,
+        config: &BringUpConfig,
+    ) -> RestoreResult<S, P> {
+        self.quick_restore_with_events(link, config, &mut |_| {})
+            .await
+    }
+
+    /// [`quick_restore`](Self::quick_restore), calling `record` with each event, at most
+    /// [`MAX_QUICK_RESTORE_EVENTS`](crate::MAX_QUICK_RESTORE_EVENTS).
+    ///
+    /// # Errors
+    ///
+    /// As [`quick_restore`](Self::quick_restore).
+    pub async fn quick_restore_with_events(
+        &mut self,
+        link: &TmdsLinkParams,
+        config: &BringUpConfig,
+        record: &mut impl FnMut(TmdsEvent),
+    ) -> RestoreResult<S, P> {
+        procedure::quick_restore(&mut AsyncIo(self), link, config, record).await
     }
 }
 
