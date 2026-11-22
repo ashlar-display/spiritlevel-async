@@ -9,10 +9,10 @@
 //!
 //! - **`display-types`** (default) — spiritlevel's conversion of display-types'
 //!   HF-SCDB type into the sink facts.
-//! - **`culvert-async`** — the SCDC trait implemented for culvert-async's client.
+//! - **`culvert-async`** — the SCDC trait implemented for culvert-async's client and a
+//!   borrow of it, and its `Send` twin for the `SendScdc` wrapper.
 
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-#![allow(async_fn_in_trait)]

@@ -15,8 +15,10 @@ SCDC, PHY and delay implementations. It has no procedures of its own. It runs sp
 `TmdsScdc` and hdmi-hal-async's `TmdsPhy`, `Clock` and `Delay`, `.await`ing each
 operation, so a bring-up yields to the executor wherever the I/O or a wait does.
 
-Because there is one implementation of each procedure, sync and async bring-up behave
-identically, step for step and event for event, and every fix reaches both.
+Because there is one implementation of each procedure, sync and async bring-up take the
+same steps and record the same events, given the same I/O results and clock readings, and
+every fix reaches both. A test runs both drivers against the same simulated sink and
+compares them ([testing](testing.md)).
 
 The crate suits cooperative async runtimes on embedded targets (embassy) and OS targets
 (tokio); it depends on no runtime.
@@ -33,7 +35,8 @@ The crate suits cooperative async runtimes on embedded targets (embassy) and OS 
   async `Delay` and an optional `Cancel` flag, and runs spiritlevel's procedures over them,
   each in a plain and a `_with_events` form.
 - **The culvert-async adapter** (`culvert-async` feature): `TmdsScdc` for
-  [culvert-async](https://github.com/ashlar-display/culvert-async)'s SCDC client.
+  [culvert-async](https://github.com/ashlar-display/culvert-async)'s SCDC client and for a
+  borrow of it, and `SendTmdsScdc` for the `SendScdc` wrapper around it.
 - **Re-exports** of spiritlevel's link parameters, settings, outcomes and events, and of the
   hdmi-hal-async traits and types the API uses, so a caller has one import path.
 
@@ -45,6 +48,8 @@ It does not cover:
   re-exported here; it needs no I/O and so no async form.
 - **The hardware:** the PHY's registers and the SCDC transfers are the implementations of
   the traits.
+- **Powering the PHY:** hdmi-hal-async's `PhyPower`, which the caller calls through
+  `phy_mut` (on unplug, after a tear-down with `SinkPresence::Gone`), as with spiritlevel.
 - **Retries, hotplug and when to bring the link up or down:** the caller's, as with
   spiritlevel.
 - **An executor:** nothing here spawns, selects or depends on a runtime.
@@ -68,22 +73,34 @@ culvert-async = { default-features = false, optional = true }
 ```
 
 ```
-display-types ─► hdmi-hal ─┬─► hdmi-hal-async ──────────┬─► spiritlevel-async
-                           ├─► spiritlevel ─────────────┤
-                           └─► culvert ─► culvert-async ┘  (culvert-async feature)
+spiritlevel ───────────────────────────────┐
+hdmi-hal-async ────────────────────────────┼─► spiritlevel-async
+culvert-async (culvert-async feature) ─────┘
 ```
+
+All three build on hdmi-hal and display-types; culvert-async also on hdmi-hal-async and
+culvert, which spiritlevel's `culvert` feature uses too.
 
 - **spiritlevel** (always): the procedures (`spiritlevel::procedure`) and every type their
   signatures use, re-exported here.
 - **hdmi-hal-async** (always): the async `TmdsPhy`, `Delay` and their `Send` twins, the
-  `Clock`, the cancel flag and the DDC error classification. Both are public dependencies:
-  a breaking release of either is a breaking release of this crate.
+  `Clock`, the cancel flag and the DDC error classification.
 - **`display-types`** (default): spiritlevel's `From` conversions from display-types'
   `HdmiForumSinkCap` into the sink facts.
 - **`culvert-async`**: the adapter ("The culvert-async adapter"). It turns on
   spiritlevel's `culvert` feature for `CulvertError`, so the sync and async adapters return
   the same error type; culvert-async depends on culvert itself, so this adds no crate to the
   graph.
+
+All three are public dependencies, culvert-async with its feature: a breaking release of
+any of them is a breaking release of this crate.
+
+**One culvert for both adapters.** `CulvertError` wraps culvert's `ScdcError`, and the
+adapter returns culvert-async's errors in it, so spiritlevel's culvert requirement and
+culvert-async's must resolve to the same culvert release series. This crate's culvert-async
+requirement therefore never accepts a culvert-async on a culvert series spiritlevel does
+not, and moves to a new culvert series only with a spiritlevel release that does
+(`CONTRIBUTING.md`, "Publishing and downstream dependencies").
 
 ---
 
@@ -111,6 +128,12 @@ The values are spiritlevel's (`SinkTmdsConfig`, `TmdsConfigReading`, `Scrambling
 `UpdateError`), and the error is a `DdcError`, whose kind tells the procedures which
 failures to poll through and which to stop on.
 
+**Each call completes in bounded time.** The procedures read the cancel flag between calls,
+not during one, so a call that never returns (a transfer the bus never finishes) cannot be
+cancelled. An implementation bounds its calls and reports a transfer that does not finish
+as an error of kind `DdcErrorKind::Timeout`. The same holds for the `TmdsPhy` and `Delay`
+the driver is given.
+
 **Cancellation clause,** as hdmi-hal-async's `ScdcTransport` has: if a call's future is
 dropped, whether a write reached the sink is unknown, and a caller that needs to know reads
 the register back. The procedures never drop one ("Cancellation" below), so the clause
@@ -118,7 +141,8 @@ matters only to other code that calls the trait.
 
 MSRV is 1.85, which has `async fn` in traits (stable since 1.75); no `async-trait` crate is
 needed. The futures are not required to be `Send`, and the trait is not object-safe: the
-trade-offs hdmi-hal-async and embedded-hal-async make.
+trade-offs hdmi-hal-async and embedded-hal-async make. The trait allows
+`async_fn_in_trait` on itself, with that reason, as spiritlevel's core trait does.
 
 ### `Send` futures: `SendTmdsScdc`
 
@@ -134,11 +158,18 @@ uses the explicit `TmdsScdc` bound instead of the blanket implementation, and th
 are opaque again. The same holds for `SendTmdsPhy` with `+ TmdsPhy` and `SendDelay` with
 `+ Delay`.
 
-The blanket implementation costs this crate the forwarding implementations
-spiritlevel's trait has (for `&mut T`): they would overlap with it (E0119). A caller that
-needs its SCDC implementation back between procedures takes it from the driver
-(`scdc_mut`, `into_parts`). Other crates lose nothing: they implement either trait for
-their own types, and the orphan rule never let them write a blanket implementation of it.
+A `SendTmdsScdc` type has both traits' methods, so with both traits in scope a method call
+on it is ambiguous: import only the trait the code is bounded by, or call
+`SendTmdsScdc::read_tmds_config(…)`.
+
+**No generic forwarding implementation.** spiritlevel's trait is implemented for `&mut T`,
+so a caller lends its SCDC implementation to the sync driver and keeps it. Here such an
+implementation would overlap with the blanket one (E0119), so a caller of this crate's
+traits either implements them for its borrowing type as well, or takes its implementation
+back from the driver (`scdc_mut`, `into_parts`). For culvert-async's client, which callers
+cannot implement the traits for, the adapter has a borrowing implementation of its own
+("The culvert-async adapter"). The PHY is moved the same way: hdmi-hal-async's `TmdsPhy`
+has no forwarding implementation either.
 
 ---
 
@@ -176,10 +207,9 @@ hdmi-hal-async re-exports: reading the clock and the flag does not wait. The API
 
 Each procedure runs its `spiritlevel::procedure` function over a private adapter that
 implements `spiritlevel::procedure::TmdsIo` by `.await`ing the driver's parts. The outcomes,
-errors and events are therefore exactly spiritlevel's: a sync and an async bring-up against
-the same sink record the same events. The procedures' bounds on events
+errors and events are therefore spiritlevel's. The procedures' bounds on events
 (`MAX_BRING_UP_EVENTS` and the others) hold here too, so a caller without `alloc` sizes a
-channel from them and never drops an event.
+channel or buffer from them; with the channel drained between calls, no event is dropped.
 
 **One value as clock and delay**, as with spiritlevel: implement `Clock` and `Delay` for a
 reference to it and pass the reference twice. For a `Send` future, the shared value must be
@@ -191,25 +221,41 @@ embassy-time's and tokio's are.
 The futures of every procedure are `Send` in generic code when the parts are bounded by the
 twins alone — `S: SendTmdsScdc`, `P: SendTmdsPhy`, `D: SendDelay` — and the clock and the
 flag are `Send` (`K: Clock + Send`, `X: Cancel + Send`, as `&AtomicBool` is); the
-`_with_events` forms also need a `Send` callback. spiritlevel's procedures hold nothing
-across an `.await` that is not `Send`, so the driver adds no condition of its own. A test
-checks this at compile time, generic over the twins.
+`_with_events` forms also need a `Send` callback. The clock and the flag need not be
+`Sync`: a procedure's future borrows the driver mutably, so it holds them only through
+`&mut`. spiritlevel's procedures hold nothing across an `.await` that is not `Send`, so the
+driver adds no condition of its own. A test checks this at compile time, generic over the
+twins, with a clock and a flag that are `Send` but not `Sync`.
 
 ### Cancellation
 
 A caller stops a running procedure through its `Cancel` flag, never by dropping its future.
-The flag is read where spiritlevel says (at entry, before each SCDC step, before each slice
-of a wait and before each read of the check), and a bring-up it stops ends
-`BringUpOutcome::Cancelled`, after the tear-down it carries.
+The flag is read where spiritlevel says: at entry, before each SCDC step, before each slice
+of a wait and before each read of the check. A bring-up it stops ends
+`BringUpOutcome::Cancelled`: seen at entry, before any I/O, with nothing to undo
+(`Cleanup::Skipped`); anywhere else, after the tear-down it carries. No procedure clears
+the flag: the caller resets it before its next call, or that call ends `Cancelled` at
+entry. A procedure stops within one `check_interval` of the flag being set, plus the
+longest single call of a part and the tear-down, which is why every call must be bounded
+("The async `TmdsScdc`").
 
 Dropping the future instead — racing it with `select`, wrapping it in a timeout, aborting
 its task — stops the procedure at whichever `.await` it was suspended on: the sink may hold
 a new `TMDS_Config`, the PHY may be configured or transmitting, a transfer may be cut short
 (the parts' cancellation clauses say what each leaves), and no tear-down runs, since a
 dropped future cannot await anything. The driver keeps no state between calls, so it stays
-usable: after a dropped procedure, call `tear_down` before anything else. The procedures
-bound their own timing (the ratio wait, the check's window, the deadline), so a timeout
-around them adds nothing.
+usable, and what to do next depends on the call dropped:
+
+- **A dropped `bring_up` or `quick_restore`:** call `tear_down` before anything else, with
+  the link the dropped call was given. Turn on `clear_sink` when the next link will not
+  write `TMDS_Config` again, as before FRL training; a `quick_restore` may instead simply
+  be called again.
+- **A dropped `tear_down`:** call it again.
+- **A dropped `check_reconnect`:** nothing; it only reads.
+
+The procedures bound their own timing (the ratio wait, the check's window, the deadline),
+so a timeout around them adds nothing the procedures do not already bound, provided the
+parts bound their calls.
 
 ---
 
@@ -219,14 +265,31 @@ With the `culvert-async` feature, `TmdsScdc` is implemented for culvert-async's
 `Scdc<T>` itself, over any async `ScdcTransport`, as spiritlevel's `culvert` feature does
 for culvert's client. Its error is spiritlevel's `CulvertError<E>`, wrapping culvert's
 `ScdcError<E>`: its kind is the transport's own for a transport error and `Unsupported`
-for a request culvert refuses. `update_tmds_config` is culvert-async's read-modify-write, and the
-bytes read reach `TmdsConfigReading::raw` and `ScramblingStatus::raw`.
+for a request culvert refuses. `update_tmds_config` is culvert-async's read-modify-write,
+and the bytes read reach `TmdsConfigReading::raw` and `ScramblingStatus::raw`.
 
-The adapter implements the plain trait, not the twin: `Scdc<T>` is one concrete type, and
-implementing both for it would conflict with the blanket implementation. Its futures are
-`Send` all the same where the compiler can see the transport: in code generic over
-`T: SendScdcTransport` that names `Scdc<T>`, a `TmdsLink<Scdc<T>, P, K, D, X>` has `Send`
-futures under the conditions above. The compile-time test covers this case as well.
+```rust
+impl<T: ScdcTransport> TmdsScdc for Scdc<T> { type Error = CulvertError<T::Error>; … }
+impl<T: ScdcTransport> TmdsScdc for &mut Scdc<T> { type Error = CulvertError<T::Error>; … }
+
+pub struct SendScdc<T>(pub Scdc<T>);
+impl<T: SendScdcTransport> SendTmdsScdc for SendScdc<T> { type Error = CulvertError<T::Error>; … }
+```
+
+- **`Scdc<T>`** implements the plain trait, not the twin: implementing both for one type
+  would conflict with the blanket implementation. Its futures are `Send` all the same where
+  the compiler can see the transport: in code generic over `T: SendScdcTransport` that
+  names `Scdc<T>`, a `TmdsLink<Scdc<T>, P, K, D, X>` has `Send` futures under the
+  conditions above.
+- **`&mut Scdc<T>`** lends the client to the driver, so one client serves the SCDC setup,
+  FRL training, TMDS bring-up and health reads in turn without being moved; its futures are
+  `Send` under the same conditions.
+- **`SendScdc<T>`** is for code generic over `S: SendTmdsScdc`, which accepts no plain
+  `TmdsScdc` such as `Scdc<T>`: an orchestrator generic over the SCDC implementation, for
+  example. It wraps the client, with a public field, and implements the twin over a
+  `SendScdcTransport`.
+
+The compile-time test covers all three.
 
 ---
 
@@ -240,23 +303,30 @@ futures under the conditions above. The compile-time test covers this case as we
   and `Timer`'s futures are `Send`, so `SendDelay` holds.
 - **Events into a channel:** the callback runs between `.await`s and cannot await, so it
   hands each event on with `embassy_sync::channel::Channel::try_send`, the channel sized
-  from the procedure's maximum.
-- **Cancel with the flag, not `select`:** the task that watches the hotplug line sets an
-  `AtomicBool` the driver holds (`with_cancel(&FLAG)`), and the procedure ends `Cancelled`
-  with its tear-down done.
+  from the procedure's maximum and drained between calls. A failed `try_send` is counted,
+  not ignored.
+- **Cancel with the flag, not `select`:** the task that watches the hotplug line sets a
+  `static` `AtomicBool` the driver holds (`with_cancel(&FLAG)`), and the procedure ends
+  `Cancelled` with its tear-down done; the caller resets the flag before the next call.
 
 **tokio:**
 
 - **`Send` is required:** `tokio::spawn` on the multi-threaded runtime needs `Send` futures,
   so a tokio caller implements the twins and passes a `Send` callback
-  (`tokio::sync::mpsc::Sender::try_send`, the channel sized from the procedure's maximum).
+  (`tokio::sync::mpsc::Sender::try_send`, the channel sized from the procedure's maximum
+  and drained between calls).
 - **More ways to drop a future:** besides `select!`, `tokio::time::timeout` and aborting a
-  `JoinHandle` drop the procedure mid-flight; set the cancel flag instead.
+  `JoinHandle` drop the procedure mid-flight; set the cancel flag instead. A flag shared as
+  an `Arc<AtomicBool>` is passed as `with_cancel(&*flag)` inside the task: `Cancel` is
+  implemented for the `AtomicBool` and references to it, not for the `Arc`.
 - **Timing is correct, not exact:** `tokio::time::sleep` rounds up to its millisecond
   granularity, so a 1 ms interval polls less often (a delay promises "at least"), and a
   loaded runtime may wake late, which the outcome reports (a later output start, at worst a
-  missed-deadline warning). The clock is `std`'s monotonic `Instant`, measured from a start
-  `Instant`.
+  missed-deadline warning).
+- **The clock is tokio's `Instant`,** measured from a start `tokio::time::Instant`: the
+  same timebase as `sleep`, so the clock advances by at least each delay, as `Delay`
+  requires, also under `tokio::time::pause()` in tests. `std`'s `Instant` does not advance
+  with paused time.
 - **On Linux the I/O blocks:** the stack's Linux backend, hdmi-hal-i2c-dev, is synchronous.
   Under tokio, run spiritlevel's sync `TmdsLink` on a thread of its own or in
   `spawn_blocking`, and send its events back over a channel; this crate is for async I/O.
@@ -268,22 +338,44 @@ futures under the conditions above. The compile-time test covers this case as we
 Every type a caller or an implementation names comes from the crate root, at the versions
 this crate uses:
 
-- **spiritlevel's:** the link parameters (`TmdsLinkParams`, `ClockRatio`,
-  `ScramblingDecision`, `ScramblingOff`, `ParamsError`, the sink and source facts,
-  `TmdsPolicy` and its threshold and gate), the SCDC values (`SinkTmdsConfig`, `TmdsConfigReading`,
-  `ScramblingStatus`, `UpdateError`), the settings (`BringUpConfig`, `TearDownConfig`,
-  `SinkPresence` and their options), the outcomes and errors (`BringUpOutcome`,
-  `BringUpError`, `TornDown`, `ReconnectCheck`, `Restored` and the rest), and the events
-  (`TmdsEvent`, `TmdsEventKind`, `TmdsStep`, the skip reasons, `CancelPoint` and the
-  `MAX_*_EVENTS` bounds); `HdmiForumSinkCap` with `display-types`.
-- **hdmi-hal-async's:** `TmdsPhy` and `SendTmdsPhy` with `TmdsPhyCapabilities`,
-  `TmdsPhyConfig` and `TmdsVideo` and its colour types; `Clock`, `Delay`, `SendDelay` and
-  `Timestamp`; `Cancel` and `NoCancel`; `DdcError`, `DdcErrorKind` and
-  `NoAcknowledgeSource`.
-- **With `culvert-async`:** `CulvertError`, and culvert-async's `Scdc`, `ScdcTransport`,
-  `SendScdcTransport`, `ScdcError` and `ProtocolError`.
+```rust
+pub use spiritlevel::{
+    // the link parameters
+    ClockRatio, ParamsError, ScramblingDecision, ScramblingOff, ScramblingThreshold,
+    SinkTmdsFacts, SourceTmdsFacts, TmdsConfigGate, TmdsLinkParams, TmdsPolicy,
+    // the SCDC values
+    ScramblingStatus, SinkTmdsConfig, TmdsConfigReading, UpdateError,
+    // the settings
+    BringUpConfig, ClearFrl, ConfigError, OnTmdsConfigFailure, OutputDuringSinkWrite,
+    ScramblerOff, SinkClearTiming, SinkPresence, SourceVersionWrite, TearDownConfig,
+    TmdsConfigWrite,
+    // the outcomes and errors
+    BringUpError, BringUpOutcome, BringUpWarning, CheckResult, Cleanup, FailedRead, LinkUp,
+    OutputState, ReconnectCheck, RestoreError, Restored, ScramblingCheck, SinkClear,
+    TearDownError, TornDown, Warnings,
+    // the events
+    CancelPoint, FrlClearSkip, MAX_BRING_UP_EVENTS, MAX_QUICK_RESTORE_EVENTS,
+    MAX_RECONNECT_CHECK_EVENTS, MAX_TEAR_DOWN_EVENTS, SinkClearSkip, SourceVersionSkip,
+    TmdsConfigSkip, TmdsEvent, TmdsEventKind, TmdsStep,
+};
+#[cfg(feature = "display-types")]
+pub use spiritlevel::HdmiForumSinkCap;
 
-The sync `TmdsScdc` and `TmdsLink` are not re-exported: this crate's own carry those names.
+pub use hdmi_hal_async::cancel::{Cancel, NoCancel};
+pub use hdmi_hal_async::ddc::{DdcError, DdcErrorKind, NoAcknowledgeSource};
+pub use hdmi_hal_async::phy::{SendTmdsPhy, TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo};
+pub use hdmi_hal_async::time::{Clock, Delay, SendDelay, Timestamp};
+pub use hdmi_hal_async::{ColorBitDepth, ColorFormat};
+
+#[cfg(feature = "culvert-async")]
+pub use spiritlevel::CulvertError;
+#[cfg(feature = "culvert-async")]
+pub use culvert_async::{ProtocolError, Scdc, ScdcError, ScdcTransport, SendScdcTransport};
+```
+
+A test names each through the crate root, so a re-export that goes missing fails to
+compile. The sync `TmdsScdc` and `TmdsLink` are not re-exported: this crate's own carry
+those names. `spiritlevel::procedure` is not either: it is for drivers, which this crate is.
 
 ---
 
@@ -295,7 +387,7 @@ src/
   scdc.rs         — the async TmdsScdc and its Send twin SendTmdsScdc
   link/mod.rs     — TmdsLink and its TmdsIo adapter
   link/tests.rs   — tests of the async driver
-  culvert.rs      — TmdsScdc for culvert-async's Scdc<T> (culvert-async feature)
+  culvert.rs      — the culvert-async adapter and SendScdc (culvert-async feature)
 ```
 
 ---
@@ -315,7 +407,7 @@ crate for a bare target (`thumbv7em-none-eabi`) with and without default feature
   supplies async I/O to them and adds no bring-up logic, so the two cannot diverge.
 - **Interfaces owned by consumers.** The SCDC side is the crate's own small trait, not a
   client's whole register map; culvert-async's adapter is an optional convenience.
-- **`Send` where the parts allow it.** Every trait has a `Send` twin, and the driver's
+- **`Send` where the parts allow it.** Every async trait has a `Send` twin, and the driver's
   futures are `Send` whenever its parts' are, checked at compile time.
 - **Stopped by a flag, not a drop.** Every procedure ends in a defined state, which a
   dropped future cannot give.
