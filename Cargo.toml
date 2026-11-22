@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["display-types"]
 display-types = ["spiritlevel/display-types"]
-culvert-async = ["dep:culvert-async"]
+culvert-async = ["dep:culvert-async", "spiritlevel/culvert"]
 
 [dependencies]
 spiritlevel = { version = "0.2", default-features = false }
