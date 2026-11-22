@@ -31,7 +31,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-          targets: thumbv7em-none-eabi
+          targets: thumbv7em-none-eabi, x86_64-unknown-uefi, aarch64-unknown-uefi
 
       - name: Cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -76,8 +76,20 @@ jobs:
       - name: Build (no_std)
         run: cargo build --locked --target thumbv7em-none-eabi
 
+      - name: Build (x86_64-unknown-uefi)
+        run: cargo build --locked --target x86_64-unknown-uefi
+
+      - name: Build (aarch64-unknown-uefi)
+        run: cargo build --locked --target aarch64-unknown-uefi
+
       - name: Build (no_std, no default features)
         run: cargo build --locked --no-default-features --target thumbv7em-none-eabi
+
+      - name: Build (x86_64-unknown-uefi, no default features)
+        run: cargo build --locked --no-default-features --target x86_64-unknown-uefi
+
+      - name: Build (aarch64-unknown-uefi, no default features)
+        run: cargo build --locked --no-default-features --target aarch64-unknown-uefi
 
       # The culvert-async feature: the adapter implementing the SCDC trait for culvert-async's client.
       - name: Clippy (culvert-async)
@@ -88,6 +100,12 @@ jobs:
 
       - name: Build (no_std, culvert-async)
         run: cargo build --locked --features culvert-async --target thumbv7em-none-eabi
+
+      - name: Build (x86_64-unknown-uefi, culvert-async)
+        run: cargo build --locked --features culvert-async --target x86_64-unknown-uefi
+
+      - name: Build (aarch64-unknown-uefi, culvert-async)
+        run: cargo build --locked --features culvert-async --target aarch64-unknown-uefi
 
   # cargo-msrv reads the MSRV from Cargo.toml's rust-version and runs the checks on that
   # toolchain. Built from crates.io with --locked at a pinned version, not install-action:
@@ -137,6 +155,16 @@ jobs:
         run: >
           cargo msrv verify --target thumbv7em-none-eabi
           -- cargo build --locked --no-default-features --target thumbv7em-none-eabi
+
+      - name: Verify MSRV (x86_64-unknown-uefi, no default features)
+        run: >
+          cargo msrv verify --target x86_64-unknown-uefi
+          -- cargo build --locked --no-default-features --target x86_64-unknown-uefi
+
+      - name: Verify MSRV (aarch64-unknown-uefi, no default features)
+        run: >
+          cargo msrv verify --target aarch64-unknown-uefi
+          -- cargo build --locked --no-default-features --target aarch64-unknown-uefi
 
   coverage:
     name: Coverage

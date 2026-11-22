@@ -32,13 +32,17 @@ The README's examples run as doctests with the others.
 
 ## `no_std` builds
 
-The crate is `no_std` without `alloc` in every build. CI checks it on a bare target:
+The crate is `no_std` without `alloc` in every build. CI checks it on a bare embedded
+target (`thumbv7em-none-eabi`, firmware without a heap) and on the UEFI targets
+(`x86_64-unknown-uefi` and `aarch64-unknown-uefi`, firmware drivers):
 
 ```sh
-rustup target add thumbv7em-none-eabi
-cargo build --target thumbv7em-none-eabi
-cargo build --no-default-features --target thumbv7em-none-eabi
-cargo build --features culvert-async --target thumbv7em-none-eabi
+rustup target add thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi
+for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+  cargo build --target "$target"
+  cargo build --no-default-features --target "$target"
+  cargo build --features culvert-async --target "$target"
+done
 ```
 
 ## Checking the MSRV
@@ -54,6 +58,10 @@ cargo msrv verify -- cargo test --locked --no-default-features
 cargo msrv verify -- cargo test --locked --features culvert-async
 cargo msrv verify --target thumbv7em-none-eabi \
   -- cargo build --locked --no-default-features --target thumbv7em-none-eabi
+cargo msrv verify --target x86_64-unknown-uefi \
+  -- cargo build --locked --no-default-features --target x86_64-unknown-uefi
+cargo msrv verify --target aarch64-unknown-uefi \
+  -- cargo build --locked --no-default-features --target aarch64-unknown-uefi
 ```
 
 ## Measuring coverage
