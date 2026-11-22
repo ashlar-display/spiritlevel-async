@@ -6,10 +6,16 @@ use core::time::Duration;
 use spiritlevel::procedure::{self, TmdsIo};
 
 use crate::{
-    Cancel, Clock, Delay, NoCancel, ScramblingStatus, SinkPresence, SinkTmdsConfig, TearDownConfig,
-    TearDownError, Timestamp, TmdsConfigReading, TmdsEvent, TmdsLinkParams, TmdsPhy, TmdsPhyConfig,
-    TmdsScdc, TornDown, UpdateError,
+    BringUpConfig, BringUpError, BringUpOutcome, Cancel, Clock, Delay, NoCancel, ScramblingStatus,
+    SinkPresence, SinkTmdsConfig, TearDownConfig, TearDownError, Timestamp, TmdsConfigReading,
+    TmdsEvent, TmdsLinkParams, TmdsPhy, TmdsPhyConfig, TmdsScdc, TmdsVideo, TornDown, UpdateError,
 };
+
+/// What a bring-up returns, over the parts' error types.
+type BringUpResult<S, P> = Result<
+    BringUpOutcome<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
+    BringUpError<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
+>;
 
 /// What a tear-down returns, over the parts' error types.
 type TearDownResult<S, P> = Result<
@@ -131,6 +137,44 @@ impl<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel> TmdsLink<S, P, K, D
         record: &mut impl FnMut(TmdsEvent),
     ) -> TearDownResult<S, P> {
         procedure::tear_down(&mut AsyncIo(self), link, config, presence, record).await
+    }
+
+    /// Brings up the TMDS link `link` describes, carrying `video`; see
+    /// [`procedure::bring_up`], which says where the cancel flag is read and what each
+    /// outcome leaves.
+    ///
+    /// Stop it through the cancel flag, never by dropping its future: a dropped bring-up
+    /// stops at whichever `.await` it was suspended on, with no tear-down, and may leave the
+    /// sink holding a new `TMDS_Config` and the PHY configured or transmitting. After one,
+    /// call [`tear_down`](Self::tear_down) with the same `link` before anything else.
+    ///
+    /// # Errors
+    ///
+    /// [`BringUpError`] when a step failed in a way that stops the bring-up.
+    pub async fn bring_up(
+        &mut self,
+        link: &TmdsLinkParams,
+        video: TmdsVideo,
+        config: &BringUpConfig,
+    ) -> BringUpResult<S, P> {
+        self.bring_up_with_events(link, video, config, &mut |_| {})
+            .await
+    }
+
+    /// [`bring_up`](Self::bring_up), calling `record` with each event, at most
+    /// [`MAX_BRING_UP_EVENTS`](crate::MAX_BRING_UP_EVENTS).
+    ///
+    /// # Errors
+    ///
+    /// As [`bring_up`](Self::bring_up).
+    pub async fn bring_up_with_events(
+        &mut self,
+        link: &TmdsLinkParams,
+        video: TmdsVideo,
+        config: &BringUpConfig,
+        record: &mut impl FnMut(TmdsEvent),
+    ) -> BringUpResult<S, P> {
+        procedure::bring_up(&mut AsyncIo(self), link, video, config, record).await
     }
 }
 

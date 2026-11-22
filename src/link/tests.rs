@@ -18,10 +18,11 @@ use std::vec::Vec;
 
 use super::TmdsLink;
 use crate::{
-    Cancel, Clock, DdcErrorKind, Delay, NoCancel, ScramblingStatus, SinkClear, SinkPresence,
-    SinkTmdsConfig, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, Timestamp, TmdsConfigReading,
-    TmdsEvent, TmdsEventKind, TmdsLinkParams, TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig,
-    TmdsPolicy, TmdsScdc, UpdateError,
+    BringUpConfig, BringUpOutcome, Cancel, CancelPoint, CheckResult, Cleanup, Clock, ClockRatio,
+    ColorBitDepth, ColorFormat, DdcErrorKind, Delay, NoCancel, ScramblingStatus, SinkClear,
+    SinkPresence, SinkTmdsConfig, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, Timestamp,
+    TmdsConfigReading, TmdsEvent, TmdsEventKind, TmdsLinkParams, TmdsPhy, TmdsPhyCapabilities,
+    TmdsPhyConfig, TmdsPolicy, TmdsScdc, TmdsVideo, UpdateError,
 };
 
 /// Polls `future` to completion with a no-op waker, returning its output and how many times
@@ -255,6 +256,8 @@ impl TmdsPhy for Phy<'_> {
 struct SimTime<'a> {
     log: &'a Log,
     now: Cell<u64>,
+    /// Set by the first delay, as a caller's task would while the procedure waits.
+    cancel_on_delay: Option<&'a AtomicBool>,
 }
 
 impl<'a> SimTime<'a> {
@@ -262,6 +265,7 @@ impl<'a> SimTime<'a> {
         Self {
             log,
             now: Cell::new(micros),
+            cancel_on_delay: None,
         }
     }
 }
@@ -277,6 +281,9 @@ impl Delay for &SimTime<'_> {
         self.log.call(Call::Delay(duration)).await;
         let micros = u64::try_from(duration.as_micros()).unwrap();
         self.now.set(self.now.get() + micros);
+        if let Some(flag) = self.cancel_on_delay {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -289,6 +296,22 @@ fn scrambled() -> TmdsLinkParams {
         TmdsPolicy::DEFAULT,
     )
     .unwrap()
+}
+
+/// 1080p60 on a sink that does not declare low-rate scrambling: plain, at 1/10.
+fn plain() -> TmdsLinkParams {
+    TmdsLinkParams::choose(
+        148_500,
+        SinkTmdsFacts::new(true, true, false),
+        SourceTmdsFacts::from(&Phy::new(&Log::default()).capabilities()),
+        TmdsPolicy::DEFAULT,
+    )
+    .unwrap()
+}
+
+/// RGB 8 bpc video at `rate_khz`.
+fn video(rate_khz: u32) -> TmdsVideo {
+    TmdsVideo::new(rate_khz, ColorBitDepth::Depth8, ColorFormat::Rgb444)
 }
 
 // The parts between procedures.
@@ -448,4 +471,124 @@ fn tear_down_passes_the_parts_errors_through() {
         ],
         "every step attempted"
     );
+}
+
+// The bring-up.
+
+#[test]
+fn bring_up_on_a_scrambled_link() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let mut sink = Sink::new(&log);
+    sink.scrambling_status = true;
+    let mut link = TmdsLink::new(sink, Phy::new(&log), &time, &time);
+
+    let mut events: Vec<TmdsEvent> = Vec::new();
+    let (outcome, suspensions) = run(link.bring_up_with_events(
+        &scrambled(),
+        video(594_000),
+        &BringUpConfig::DEFAULT,
+        &mut |event| events.push(event),
+    ));
+
+    let Ok(BringUpOutcome::Up(up)) = outcome else {
+        panic!("not up: {outcome:?}");
+    };
+    assert_eq!(up.link, scrambled());
+    assert_eq!(up.check.result, CheckResult::Set);
+    assert!(suspensions > 0, "the procedure suspended on the I/O");
+
+    // The sink write, the PHY and the ratio wait all reached their parts.
+    let calls = log.calls();
+    assert!(calls.contains(&Call::UpdateTmdsConfig(SinkTmdsConfig::new(true, true))));
+    assert!(calls.iter().any(|c| matches!(c, Call::Delay(_))));
+    assert!(
+        link.clock().now() > Timestamp::from_micros(0),
+        "the delay advanced the clock"
+    );
+    assert!(calls.contains(&Call::StartOutput));
+    assert!(calls.contains(&Call::ReadScramblingStatus));
+
+    assert!(!events.is_empty() && events.len() <= crate::MAX_BRING_UP_EVENTS);
+    assert!(
+        events.windows(2).all(|w| w[0].at <= w[1].at),
+        "stamped in order from the driver's clock"
+    );
+
+    let (sink, phy, ..) = link.into_parts();
+    assert_eq!(sink.tmds_config, 0x03);
+    assert_eq!(sink.source_version, 1);
+    assert!(phy.output && phy.scrambling);
+    assert_eq!(
+        phy.configured.map(|c| c.clock_ratio),
+        Some(ClockRatio::Div40)
+    );
+}
+
+#[test]
+fn the_plain_bring_up_on_a_plain_link() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let mut link = TmdsLink::new(Sink::new(&log), Phy::new(&log), &time, &time);
+
+    let (outcome, _) = run(link.bring_up(&plain(), video(148_500), &BringUpConfig::DEFAULT));
+
+    let Ok(BringUpOutcome::Up(up)) = outcome else {
+        panic!("not up: {outcome:?}");
+    };
+    assert_eq!(up.check.result, CheckResult::NotApplicable);
+    assert!(!log.calls().contains(&Call::ReadScramblingStatus));
+    let (sink, phy, ..) = link.into_parts();
+    assert_eq!(sink.tmds_config & 0x03, 0, "neither bit set");
+    assert!(phy.output && !phy.scrambling);
+    assert_eq!(
+        phy.configured.map(|c| c.clock_ratio),
+        Some(ClockRatio::Div10)
+    );
+}
+
+#[test]
+fn a_flag_set_before_the_bring_up_stops_it_at_entry() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    let flag = AtomicBool::new(true);
+    let mut link = TmdsLink::new(Sink::new(&log), Phy::new(&log), &time, &time).with_cancel(&flag);
+
+    let (outcome, _) = run(link.bring_up(&scrambled(), video(594_000), &BringUpConfig::DEFAULT));
+
+    assert!(matches!(
+        outcome,
+        Ok(BringUpOutcome::Cancelled {
+            at: CancelPoint::Entry,
+            cleanup: Cleanup::Skipped,
+            ..
+        })
+    ));
+    assert!(log.calls().is_empty(), "nothing done");
+    assert!(flag.load(Ordering::Relaxed), "the flag is not cleared");
+}
+
+#[test]
+fn a_flag_set_during_the_bring_up_stops_it_after_its_tear_down() {
+    let log = Log::default();
+    let flag = AtomicBool::new(false);
+    let mut time = SimTime::at(&log, 0);
+    time.cancel_on_delay = Some(&flag);
+    let mut sink = Sink::new(&log);
+    sink.scrambling_status = true;
+    let mut link = TmdsLink::new(sink, Phy::new(&log), &time, &time).with_cancel(&flag);
+
+    let (outcome, _) = run(link.bring_up(&scrambled(), video(594_000), &BringUpConfig::DEFAULT));
+
+    let Ok(BringUpOutcome::Cancelled { at, cleanup, .. }) = outcome else {
+        panic!("not cancelled: {outcome:?}");
+    };
+    assert_ne!(at, CancelPoint::Entry, "seen after the wait began");
+    assert!(matches!(cleanup, Cleanup::TornDown(Ok(_))));
+    assert_eq!(
+        log.calls().last(),
+        Some(&Call::StopOutput),
+        "torn down last"
+    );
+    assert!(!link.phy().output);
 }
