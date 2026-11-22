@@ -17,6 +17,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod scdc;
+
+pub use scdc::{SendTmdsScdc, TmdsScdc};
+
 // spiritlevel's link parameters, SCDC values, settings, outcomes, errors and events,
 // re-exported so that callers name the same versions this crate's procedures use. The
 // sync `TmdsScdc` and `TmdsLink` are not re-exported: this crate's own carry those names.
