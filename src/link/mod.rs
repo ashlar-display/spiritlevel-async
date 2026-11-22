@@ -1,7 +1,21 @@
 //! The async driver: [`TmdsLink`] runs spiritlevel's procedures over an async [`TmdsScdc`],
 //! an async `TmdsPhy`, a `Clock` and an async `Delay`, with an optional [`Cancel`] flag.
 
-use crate::{Cancel, Clock, Delay, NoCancel, TmdsPhy, TmdsScdc};
+use core::time::Duration;
+
+use spiritlevel::procedure::{self, TmdsIo};
+
+use crate::{
+    Cancel, Clock, Delay, NoCancel, ScramblingStatus, SinkPresence, SinkTmdsConfig, TearDownConfig,
+    TearDownError, Timestamp, TmdsConfigReading, TmdsEvent, TmdsLinkParams, TmdsPhy, TmdsPhyConfig,
+    TmdsScdc, TornDown, UpdateError,
+};
+
+/// What a tear-down returns, over the parts' error types.
+type TearDownResult<S, P> = Result<
+    TornDown<<S as TmdsScdc>::Error>,
+    TearDownError<<S as TmdsScdc>::Error, <P as TmdsPhy>::Error>,
+>;
 
 #[cfg(test)]
 mod tests;
@@ -83,5 +97,110 @@ impl<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel> TmdsLink<S, P, K, D
     /// the same timebase.
     pub fn clock(&self) -> &K {
         &self.clock
+    }
+
+    /// Stops the TMDS link `link` describes; see [`procedure::tear_down`].
+    ///
+    /// Not stopped by the cancel flag: tear-down is the recovery. If its future is dropped
+    /// before it completes, call it again.
+    ///
+    /// # Errors
+    ///
+    /// [`TearDownError`] when a PHY step failed; every step was still attempted.
+    pub async fn tear_down(
+        &mut self,
+        link: &TmdsLinkParams,
+        config: &TearDownConfig,
+        presence: SinkPresence,
+    ) -> TearDownResult<S, P> {
+        self.tear_down_with_events(link, config, presence, &mut |_| {})
+            .await
+    }
+
+    /// [`tear_down`](Self::tear_down), calling `record` with each event, at most
+    /// [`MAX_TEAR_DOWN_EVENTS`](crate::MAX_TEAR_DOWN_EVENTS).
+    ///
+    /// # Errors
+    ///
+    /// As [`tear_down`](Self::tear_down).
+    pub async fn tear_down_with_events(
+        &mut self,
+        link: &TmdsLinkParams,
+        config: &TearDownConfig,
+        presence: SinkPresence,
+        record: &mut impl FnMut(TmdsEvent),
+    ) -> TearDownResult<S, P> {
+        procedure::tear_down(&mut AsyncIo(self), link, config, presence, record).await
+    }
+}
+
+/// [`TmdsIo`] over a [`TmdsLink`]'s parts: each operation `.await`s the part's call.
+struct AsyncIo<'a, S, P, K, D, X>(&'a mut TmdsLink<S, P, K, D, X>);
+
+impl<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel> TmdsIo for AsyncIo<'_, S, P, K, D, X> {
+    type ScdcError = S::Error;
+    type PhyError = P::Error;
+
+    async fn write_tmds_config(&mut self, config: SinkTmdsConfig) -> Result<(), S::Error> {
+        self.0.scdc.write_tmds_config(config).await
+    }
+
+    async fn update_tmds_config(
+        &mut self,
+        config: SinkTmdsConfig,
+    ) -> Result<(), UpdateError<S::Error>> {
+        self.0.scdc.update_tmds_config(config).await
+    }
+
+    async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, S::Error> {
+        self.0.scdc.read_tmds_config().await
+    }
+
+    async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, S::Error> {
+        self.0.scdc.read_scrambling_status().await
+    }
+
+    async fn read_sink_version(&mut self) -> Result<u8, S::Error> {
+        self.0.scdc.read_sink_version().await
+    }
+
+    async fn write_source_version(&mut self, version: u8) -> Result<(), S::Error> {
+        self.0.scdc.write_source_version(version).await
+    }
+
+    async fn clear_frl_rate(&mut self) -> Result<(), S::Error> {
+        self.0.scdc.clear_frl_rate().await
+    }
+
+    async fn clear_flt_update(&mut self) -> Result<bool, UpdateError<S::Error>> {
+        self.0.scdc.clear_flt_update().await
+    }
+
+    async fn configure(&mut self, config: TmdsPhyConfig) -> Result<(), P::Error> {
+        self.0.phy.configure(config).await
+    }
+
+    async fn set_scrambling(&mut self, enabled: bool) -> Result<(), P::Error> {
+        self.0.phy.set_scrambling(enabled).await
+    }
+
+    async fn start_output(&mut self) -> Result<(), P::Error> {
+        self.0.phy.start_output().await
+    }
+
+    async fn stop_output(&mut self) -> Result<(), P::Error> {
+        self.0.phy.stop_output().await
+    }
+
+    fn now(&self) -> Timestamp {
+        self.0.clock.now()
+    }
+
+    async fn delay(&mut self, duration: Duration) {
+        self.0.delay.delay(duration).await;
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.cancel.is_cancelled()
     }
 }
