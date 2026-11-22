@@ -17,8 +17,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod link;
 mod scdc;
 
+pub use link::TmdsLink;
 pub use scdc::{SendTmdsScdc, TmdsScdc};
 
 // spiritlevel's link parameters, SCDC values, settings, outcomes, errors and events,
