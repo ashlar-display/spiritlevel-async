@@ -1,21 +1,47 @@
 //! Async TMDS link bring-up for HDMI sources.
 //!
-//! `spiritlevel-async` is the async companion to `spiritlevel`: it runs spiritlevel's
-//! procedures (bring-up, tear-down, the reconnect check and the quick restore) over
-//! hdmi-hal-async's PHY, clock and delay traits and an async SCDC trait of its own, so sync
-//! and async bring-up are the same procedure.
+//! `spiritlevel-async` is the async companion to `spiritlevel`. It has no procedures of its
+//! own: [`TmdsLink`] runs spiritlevel's — bring-up, tear-down, the reconnect check and the
+//! quick restore — over an async [`TmdsScdc`], hdmi-hal-async's [`TmdsPhy`] and [`Delay`],
+//! a [`Clock`] and an optional [`Cancel`] flag, `.await`ing each operation. Sync and async
+//! bring-up are one procedure, so they take the same steps and record the same
+//! [`TmdsEvent`]s given the same I/O.
+//!
+//! The settings, outcomes and events are spiritlevel's, re-exported here with the
+//! hdmi-hal-async types the API uses, so a caller or an implementation has one import
+//! path.
+//!
+//! # Stopping a procedure
+//!
+//! A running procedure is stopped through its cancel flag ([`TmdsLink::with_cancel`]),
+//! never by dropping its future: a dropped future stops at whichever `.await` it was
+//! suspended on and cannot run its tear-down. Each procedure's documentation says what to
+//! do after one.
+//!
+//! # `Send` futures
+//!
+//! The plain traits promise nothing about their futures. Each has a `Send` twin —
+//! [`SendTmdsScdc`], [`SendTmdsPhy`], [`SendDelay`] — and in code bounded by the twins
+//! alone, with a clock and a flag that are `Send`, every procedure's future is `Send`, so it
+//! can be spawned on a multi-threaded executor.
 //!
 //! # Features
 //!
-//! - **`display-types`** (default) — spiritlevel's conversion of display-types'
-//!   HF-SCDB type into the sink facts.
-//! - **`culvert-async`** — the SCDC trait implemented for culvert-async's client and a
-//!   borrow of it, and its `Send` twin for the `SendScdc` wrapper.
+//! - **`display-types`** (default) — spiritlevel's `From` conversions from display-types'
+//!   `HdmiForumSinkCap` into the sink facts.
+//! - **`culvert-async`** — [`TmdsScdc`] for culvert-async's client `Scdc<T>` and a borrow
+//!   of it, [`SendTmdsScdc`] for the `SendScdc<T>` wrapper, with errors in spiritlevel's
+//!   `CulvertError`.
 
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 #[cfg(feature = "culvert-async")]
 mod culvert;
