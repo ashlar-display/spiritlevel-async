@@ -17,9 +17,13 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "culvert-async")]
+mod culvert;
 mod link;
 mod scdc;
 
+#[cfg(feature = "culvert-async")]
+pub use culvert::SendScdc;
 pub use link::TmdsLink;
 pub use scdc::{SendTmdsScdc, TmdsScdc};
 
