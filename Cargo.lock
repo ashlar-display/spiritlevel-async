@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "culvert"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -57,6 +63,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maquette"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ba101d565ea1c20d213859f8c202caf28b7b28371de20bafa505bd7ba5231d5"
+dependencies = [
+ "critical-section",
+ "hdmi-hal",
+ "hdmi-hal-async",
+]
+
+[[package]]
 name = "spiritlevel"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -71,7 +88,9 @@ dependencies = [
 name = "spiritlevel-async"
 version = "0.1.0"
 dependencies = [
+ "culvert",
  "culvert-async",
  "hdmi-hal-async",
+ "maquette",
  "spiritlevel",
 ]
