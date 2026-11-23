@@ -35,7 +35,7 @@ Over a register-level async `ScdcTransport`:
   `ScramblingStatus::raw`.
 - **Errors:** a transport error's kind passes through `CulvertError`, and a failed read or
   write of a read-modify-write is told apart.
-- **`&mut Scdc<T>` and `SendScdc<T>`** forward every call to the client.
+- **`&mut Scdc<T>`** forwards every call to the client.
 
 ## `Send` futures (`tests/send.rs`)
 
@@ -44,8 +44,7 @@ each procedure, plain and with events, through a function that requires `Send`, 
 compiles only if every procedure could run on a multi-threaded executor. The clock and the
 cancel flag are `Send` but not `Sync`, so a change that made the driver hold them through a
 shared reference fails to compile. With `culvert-async`, the same holds for `Scdc<T>` and
-`&mut Scdc<T>` over a `SendScdcTransport`, and for `SendScdc<T>` in code bounded by
-`SendTmdsScdc`.
+`&mut Scdc<T>` over a `SendScdcTransport`.
 
 ## Sync and async agree (`tests/simulated_sink.rs`, `culvert-async` feature)
 

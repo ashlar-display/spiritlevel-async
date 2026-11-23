@@ -1,19 +1,17 @@
 //! [`TmdsScdc`] for culvert-async's SCDC client (the `culvert-async` feature).
 //!
 //! Implemented for `culvert_async::Scdc<T>` itself and for a mutable borrow of it, over any
-//! async `ScdcTransport`, and [`SendTmdsScdc`] for the [`SendScdc`] wrapper over a
-//! `SendScdcTransport`. Errors are culvert's, wrapped in spiritlevel's [`CulvertError`] so
+//! async `ScdcTransport`. Errors are culvert's, wrapped in spiritlevel's [`CulvertError`] so
 //! that they carry a [`DdcErrorKind`](crate::DdcErrorKind), the same type spiritlevel's
 //! sync adapter returns.
 
 use culvert_async::{
     ClearableUpdateFlags, FfeLevels, FrlConfig, FrlRate, ReadModifyWriteError, Scdc, ScdcTransport,
-    SendScdcTransport, TmdsConfig,
+    TmdsConfig,
 };
 
 use crate::{
-    CulvertError, ScramblingStatus, SendTmdsScdc, SinkTmdsConfig, TmdsConfigReading, TmdsScdc,
-    UpdateError,
+    CulvertError, ScramblingStatus, SinkTmdsConfig, TmdsConfigReading, TmdsScdc, UpdateError,
 };
 
 fn config(config: SinkTmdsConfig) -> TmdsConfig {
@@ -143,53 +141,6 @@ impl<T: ScdcTransport> TmdsScdc for &mut Scdc<T> {
     }
 }
 
-/// culvert-async's client as a [`SendTmdsScdc`], for code generic over `S: SendTmdsScdc`.
-///
-/// Such code accepts no plain [`TmdsScdc`] such as `Scdc<T>`: an orchestrator generic over
-/// its SCDC implementation, for example. Code that names `Scdc<T>` itself needs no wrapper:
-/// its futures are `Send` over a `SendScdcTransport` already. The field is public, so the
-/// client is reached and taken back directly.
-pub struct SendScdc<T>(pub Scdc<T>);
-
-impl<T: SendScdcTransport> SendTmdsScdc for SendScdc<T> {
-    type Error = CulvertError<T::Error>;
-
-    async fn write_tmds_config(&mut self, sink: SinkTmdsConfig) -> Result<(), Self::Error> {
-        TmdsScdc::write_tmds_config(&mut self.0, sink).await
-    }
-
-    async fn update_tmds_config(
-        &mut self,
-        sink: SinkTmdsConfig,
-    ) -> Result<(), UpdateError<Self::Error>> {
-        TmdsScdc::update_tmds_config(&mut self.0, sink).await
-    }
-
-    async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, Self::Error> {
-        TmdsScdc::read_tmds_config(&mut self.0).await
-    }
-
-    async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, Self::Error> {
-        TmdsScdc::read_scrambling_status(&mut self.0).await
-    }
-
-    async fn read_sink_version(&mut self) -> Result<u8, Self::Error> {
-        TmdsScdc::read_sink_version(&mut self.0).await
-    }
-
-    async fn write_source_version(&mut self, version: u8) -> Result<(), Self::Error> {
-        TmdsScdc::write_source_version(&mut self.0, version).await
-    }
-
-    async fn clear_frl_rate(&mut self) -> Result<(), Self::Error> {
-        TmdsScdc::clear_frl_rate(&mut self.0).await
-    }
-
-    async fn clear_flt_update(&mut self) -> Result<bool, UpdateError<Self::Error>> {
-        TmdsScdc::clear_flt_update(&mut self.0).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::future::Future;
@@ -197,7 +148,7 @@ mod tests {
     use core::sync::atomic::{AtomicU32, Ordering};
     use core::task::{Context, Poll, Waker};
 
-    use culvert_async::ScdcError;
+    use culvert_async::{ScdcError, SendScdcTransport};
 
     use super::*;
     use crate::{DdcError, DdcErrorKind, NoAcknowledgeSource};
@@ -213,9 +164,9 @@ mod tests {
     const NACK: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address);
 
     /// An async transport over a register file, failing every transfer from `fail_from` on
-    /// with a NACK. `Update_0` is write-1-to-clear, as on a sink. The twin, so it serves the
-    /// plain implementations (through hdmi-hal-async's blanket implementation) and
-    /// `SendScdc` alike.
+    /// with a NACK. `Update_0` is write-1-to-clear, as on a sink. Implemented as the twin, so
+    /// it is `Sync` as a `Send` caller's transport is, and serves the plain implementations
+    /// through hdmi-hal-async's blanket implementation.
     struct Sink {
         regs: [u8; 0x40],
         transfers: AtomicU32,
@@ -318,14 +269,6 @@ mod tests {
         let mut borrowed = &mut scdc;
         exercise(&mut borrowed);
         assert_exercised(&scdc.into_transport());
-    }
-
-    #[test]
-    fn the_send_wrapper_forwards_every_call_to_the_client() {
-        let mut scdc = SendScdc(Scdc::new(sink()));
-        // Through the plain trait, which the twin's blanket implementation gives it.
-        exercise(&mut scdc);
-        assert_exercised(&scdc.0.into_transport());
     }
 
     #[test]

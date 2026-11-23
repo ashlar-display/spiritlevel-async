@@ -36,7 +36,7 @@ The crate suits cooperative async runtimes on embedded targets (embassy) and OS 
   each in a plain and a `_with_events` form.
 - **The culvert-async adapter** (`culvert-async` feature): `TmdsScdc` for
   [culvert-async](https://github.com/ashlar-display/culvert-async)'s SCDC client and for a
-  borrow of it, and `SendTmdsScdc` for the `SendScdc` wrapper around it.
+  borrow of it.
 - **Re-exports** of spiritlevel's link parameters, settings, outcomes and events, and of the
   hdmi-hal-async traits and types the API uses, so a caller has one import path.
 
@@ -271,9 +271,6 @@ and the bytes read reach `TmdsConfigReading::raw` and `ScramblingStatus::raw`.
 ```rust
 impl<T: ScdcTransport> TmdsScdc for Scdc<T> { type Error = CulvertError<T::Error>; … }
 impl<T: ScdcTransport> TmdsScdc for &mut Scdc<T> { type Error = CulvertError<T::Error>; … }
-
-pub struct SendScdc<T>(pub Scdc<T>);
-impl<T: SendScdcTransport> SendTmdsScdc for SendScdc<T> { type Error = CulvertError<T::Error>; … }
 ```
 
 - **`Scdc<T>`** implements the plain trait, not the twin: implementing both for one type
@@ -284,12 +281,18 @@ impl<T: SendScdcTransport> SendTmdsScdc for SendScdc<T> { type Error = CulvertEr
 - **`&mut Scdc<T>`** lends the client to the driver, so one client serves the SCDC setup,
   FRL training, TMDS bring-up and health reads in turn without being moved; its futures are
   `Send` under the same conditions.
-- **`SendScdc<T>`** is for code generic over `S: SendTmdsScdc`, which accepts no plain
-  `TmdsScdc` such as `Scdc<T>`: an orchestrator generic over the SCDC implementation, for
-  example. It wraps the client, with a public field, and implements the twin over a
-  `SendScdcTransport`.
+The compile-time test covers both.
 
-The compile-time test covers all three.
+**Code bounded by `S: SendTmdsScdc`** (an orchestrator generic over its SCDC
+implementation, for example) accepts no plain `TmdsScdc` such as `Scdc<T>`, so it needs a
+client type that implements the twin. That type is culvert-async's to define, not this
+crate's: one wrapper around its client is to serve FRL training (plumbob-async's
+`SendScdcClient`) and TMDS bring-up alike, and two crates each defining their own would give
+a caller two types for one client, of which no value implements both twins. culvert-async
+plans that wrapper (`SendScdc<T>`, see its roadmap); once it ships, this crate implements
+`SendTmdsScdc` for it, an additive release. Until then, such code wraps the client in a
+local type that implements `SendTmdsScdc` over a `SendScdcTransport` by forwarding each
+method to `Scdc<T>`'s implementation.
 
 ---
 
@@ -388,7 +391,7 @@ src/
   scdc.rs         — the async TmdsScdc and its Send twin SendTmdsScdc
   link/mod.rs     — TmdsLink and its TmdsIo adapter
   link/tests.rs   — tests of the async driver
-  culvert.rs      — the culvert-async adapter and SendScdc (culvert-async feature)
+  culvert.rs      — the culvert-async adapter (culvert-async feature)
 ```
 
 ---

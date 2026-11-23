@@ -100,7 +100,7 @@ use spiritlevel_async::HdmiForumSinkCap;
 #[cfg(feature = "culvert-async")]
 #[allow(unused_imports, reason = "imported to prove the re-exports exist")]
 use spiritlevel_async::{
-    CulvertError, ProtocolError, Scdc, ScdcError, ScdcTransport, SendScdc, SendScdcTransport,
+    CulvertError, ProtocolError, Scdc, ScdcError, ScdcTransport, SendScdcTransport,
 };
 
 /// Accepts only a value that is `Send`, as `tokio::spawn` does a future.
@@ -325,6 +325,52 @@ impl SendScdcTransport for SendTransport {
     }
 }
 
+/// The local forwarding wrapper the docs describe for code bounded by `SendTmdsScdc`, which
+/// takes no plain `Scdc<T>`: the twin over a `SendScdcTransport`, each method forwarded to
+/// `Scdc<T>`'s implementation.
+#[cfg(feature = "culvert-async")]
+struct LocalSendScdc<T>(Scdc<T>);
+
+#[cfg(feature = "culvert-async")]
+impl<T: SendScdcTransport> SendTmdsScdc for LocalSendScdc<T> {
+    type Error = CulvertError<T::Error>;
+
+    async fn write_tmds_config(&mut self, c: SinkTmdsConfig) -> Result<(), Self::Error> {
+        TmdsScdc::write_tmds_config(&mut self.0, c).await
+    }
+
+    async fn update_tmds_config(
+        &mut self,
+        c: SinkTmdsConfig,
+    ) -> Result<(), UpdateError<Self::Error>> {
+        TmdsScdc::update_tmds_config(&mut self.0, c).await
+    }
+
+    async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, Self::Error> {
+        TmdsScdc::read_tmds_config(&mut self.0).await
+    }
+
+    async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, Self::Error> {
+        TmdsScdc::read_scrambling_status(&mut self.0).await
+    }
+
+    async fn read_sink_version(&mut self) -> Result<u8, Self::Error> {
+        TmdsScdc::read_sink_version(&mut self.0).await
+    }
+
+    async fn write_source_version(&mut self, version: u8) -> Result<(), Self::Error> {
+        TmdsScdc::write_source_version(&mut self.0, version).await
+    }
+
+    async fn clear_frl_rate(&mut self) -> Result<(), Self::Error> {
+        TmdsScdc::clear_frl_rate(&mut self.0).await
+    }
+
+    async fn clear_flt_update(&mut self) -> Result<bool, UpdateError<Self::Error>> {
+        TmdsScdc::clear_flt_update(&mut self.0).await
+    }
+}
+
 #[cfg(feature = "culvert-async")]
 #[test]
 fn the_adapters_futures_are_send_over_a_send_transport() {
@@ -341,8 +387,8 @@ fn the_adapters_futures_are_send_over_a_send_transport() {
     let mut link = TmdsLink::new(&mut client, SendPhy, clock(), SendTimer).with_cancel(flag());
     every_procedure_is_send_through_a_borrowed_client(&mut link, &params(), video(), &mut record);
 
-    // `SendScdc` in code bounded by `SendTmdsScdc`, which takes no plain `Scdc<T>`.
-    let scdc = SendScdc(Scdc::new(SendTransport));
+    // Code bounded by `SendTmdsScdc` takes the client through a local forwarding wrapper.
+    let scdc = LocalSendScdc(Scdc::new(SendTransport));
     let mut link = TmdsLink::new(scdc, SendPhy, clock(), SendTimer).with_cancel(flag());
     every_procedure_is_send(&mut link, &params(), video(), &mut record);
 

@@ -17,8 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `into_parts` and accessors for the parts. Its futures are `Send` when the parts are
   bounded by the `Send` twins.
 - The `culvert-async` feature: `TmdsScdc` for culvert-async's `Scdc<T>` and `&mut Scdc<T>`,
-  and the `SendScdc<T>` wrapper implementing `SendTmdsScdc`, with errors in spiritlevel's
-  `CulvertError`.
+  with errors in spiritlevel's `CulvertError`.
 - Re-exports of spiritlevel's link parameters, settings, outcomes and events, and of the
   hdmi-hal-async traits and types the API uses (and, with `culvert-async`, culvert-async's
   client, errors and transports).

@@ -173,15 +173,17 @@ With the `culvert-async` feature, `TmdsScdc` is implemented for culvert-async's 
 `Scdc<T>` over any async `ScdcTransport`, and for a mutable borrow of it, so one client
 serves SCDC setup, FRL training and TMDS bring-up in turn. Errors are spiritlevel's
 `CulvertError`, the type spiritlevel's own culvert adapter returns. In code generic over
-`T: SendScdcTransport` that names `Scdc<T>`, the futures are `Send` already; code bounded
-by `S: SendTmdsScdc` takes the `SendScdc<T>` wrapper instead.
+`T: SendScdcTransport` that names `Scdc<T>`, the futures are `Send` already. Code bounded
+by `S: SendTmdsScdc` cannot take `Scdc<T>` itself; until culvert-async's planned `Send`
+wrapper is supported (see the [roadmap](doc/roadmap.md)), it wraps the client in a local
+type that implements `SendTmdsScdc` by forwarding to `Scdc<T>`.
 
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `display-types` | yes | spiritlevel's `From` conversions from display-types' `HdmiForumSinkCap` into the sink facts |
-| `culvert-async` | no | `TmdsScdc` for [culvert-async](https://github.com/ashlar-display/culvert-async)'s client and a borrow of it, `SendTmdsScdc` for `SendScdc`, and culvert-async's types re-exported |
+| `culvert-async` | no | `TmdsScdc` for [culvert-async](https://github.com/ashlar-display/culvert-async)'s client and a borrow of it, and culvert-async's types re-exported |
 
 ## `no_std` builds
 

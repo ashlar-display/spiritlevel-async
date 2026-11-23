@@ -30,8 +30,7 @@
 //! - **`display-types`** (default) — spiritlevel's `From` conversions from display-types'
 //!   `HdmiForumSinkCap` into the sink facts.
 //! - **`culvert-async`** — [`TmdsScdc`] for culvert-async's client `Scdc<T>` and a borrow
-//!   of it, [`SendTmdsScdc`] for the `SendScdc<T>` wrapper, with errors in spiritlevel's
-//!   `CulvertError`.
+//!   of it, with errors in spiritlevel's `CulvertError`.
 
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -48,8 +47,6 @@ mod culvert;
 mod link;
 mod scdc;
 
-#[cfg(feature = "culvert-async")]
-pub use culvert::SendScdc;
 pub use link::TmdsLink;
 pub use scdc::{SendTmdsScdc, TmdsScdc};
 
