@@ -21,14 +21,15 @@ use maquette::hdmi_hal::ddc::SCDC;
 use maquette::hdmi_hal::scdc::ScdcOverDdc;
 use maquette::hdmi_hal_async::scdc::SendScdcOverDdc;
 use maquette::{
-    Bench, BusError, Ddc, Effect, Fault, Filter, NoAcknowledgeSource, Phy, PhyError, Record,
-    SinkConfig, Time, Trigger,
+    Bench, BusError, Ddc, Effect, Fault, Filter, NoAcknowledgeSource, OpKind, Phy, PhyError,
+    Record, SinkConfig, Time, Trigger,
 };
 use spiritlevel_async::{
-    BringUpConfig, BringUpError, BringUpOutcome, Cancel, CancelPoint, CheckResult, Clock,
-    ColorBitDepth, ColorFormat, CulvertError, DdcErrorKind, ReconnectCheck, RestoreError, Restored,
-    SinkClear, SinkPresence, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, TearDownError,
-    Timestamp, TmdsEvent, TmdsLinkParams, TmdsPolicy, TmdsVideo, TornDown,
+    BringUpConfig, BringUpError, BringUpOutcome, BringUpWarning, Cancel, CancelPoint, CheckResult,
+    Clock, ColorBitDepth, ColorFormat, CulvertError, DdcError, DdcErrorKind, ReconnectCheck,
+    RestoreError, Restored, SinkClear, SinkPresence, SinkTmdsFacts, SourceTmdsFacts,
+    TearDownConfig, TearDownError, Timestamp, TmdsEvent, TmdsLinkParams, TmdsPolicy, TmdsVideo,
+    TornDown, UpdateError,
 };
 
 /// Room for every record of the longest case, a check that runs its whole window.
@@ -347,16 +348,31 @@ fn a_sink_that_never_reports_scrambling() {
 
 #[test]
 fn a_failed_tmds_config_write() {
+    const NACK: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data);
     fn fail_the_write(bench: &TestBench) {
-        let nack = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data);
-        let filter = Filter::ANY.with_addr(SCDC).with_first(TMDS_CONFIG);
+        // The write of the read-modify-write, not its read: a write operation addressed to
+        // `TMDS_Config`.
+        let filter = Filter::ANY
+            .with_addr(SCDC)
+            .with_first(TMDS_CONFIG)
+            .with_op(OpKind::Write);
         bench
-            .schedule(Fault::new(Effect::Fail(nack)).on(filter))
+            .schedule(Fault::new(Effect::Fail(NACK)).on(filter))
             .unwrap();
     }
-    let failed = agree(SinkConfig::new(), fail_the_write, None, bring_up(SCRAMBLED));
-    let clean = agree(SinkConfig::new(), nothing, None, bring_up(SCRAMBLED));
-    assert_ne!(failed, clean, "the fault changed the outcome");
+    let outcome = agree(SinkConfig::new(), fail_the_write, None, bring_up(SCRAMBLED));
+    let Ok(BringUpOutcome::Up(up)) = &outcome else {
+        panic!("not up: {outcome:?}");
+    };
+    assert!(
+        up.warnings.iter_warnings().any(|warning| matches!(
+            warning,
+            BringUpWarning::TmdsConfigWriteFailed { error: UpdateError::Write(e), .. }
+                if e.kind() == NACK
+        )),
+        "the write half failed with the fault's error: {:?}",
+        up.warnings
+    );
 }
 
 #[test]
