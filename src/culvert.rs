@@ -36,6 +36,12 @@ fn update_error<E>(error: ReadModifyWriteError<E>) -> UpdateError<CulvertError<E
 /// blanket implementation. Its futures are `Send` all the same where the compiler can see
 /// the transport: in code generic over `T: SendScdcTransport` that names `Scdc<T>`, the
 /// driver's futures are `Send` under the conditions [`TmdsLink`](crate::TmdsLink) gives.
+///
+/// The client has inherent methods named like five of these (`read_tmds_config`,
+/// `write_tmds_config`, `update_tmds_config`, `read_sink_version`, `write_source_version`),
+/// with culvert's types, and a method call picks those over the trait's: with `TmdsScdc` in
+/// scope, `scdc.read_tmds_config()` still returns culvert's reading. Call the trait's
+/// through the trait, `TmdsScdc::read_tmds_config(&mut scdc)`, as the driver does.
 impl<T: ScdcTransport> TmdsScdc for Scdc<T> {
     type Error = CulvertError<T::Error>;
 

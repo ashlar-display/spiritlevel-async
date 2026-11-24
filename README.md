@@ -94,11 +94,21 @@ each event on, with a channel's `try_send` for example.
 ## Stopping a procedure
 
 Stop a running procedure with its cancel flag, never by dropping its future. The flag
-(`Cancel`, implemented for `AtomicBool` and references to one) is given with `with_cancel`
-and read where spiritlevel says: at entry, before each SCDC step, before each slice of a
-wait and before each read of the scrambling check. A bring-up it stops ends
-`BringUpOutcome::Cancelled`, after the tear-down it carries. No procedure clears the flag:
-reset it before the next call, or that call ends `Cancelled` at entry.
+(`Cancel`, implemented for `AtomicBool` and references to one) is given with `with_cancel`,
+and each procedure reads it where spiritlevel says:
+
+- **`bring_up`** reads it at entry, before each SCDC step, before each slice of a wait and
+  before each read of the scrambling check. Seen at entry, the bring-up ends
+  `BringUpOutcome::Cancelled` before any I/O, with nothing to undo (`Cleanup::Skipped`);
+  seen later, it ends `Cancelled` after the tear-down it carries.
+- **`quick_restore`** reads it only before each read of its scrambling check: its write and
+  its scrambler call always run, and on a plain link, which has no check, it is not read.
+  A cancelled check is `CheckResult::Cancelled`, with the link left running.
+- **`tear_down`** and **`check_reconnect`** never read it: the tear-down is the recovery,
+  and the check is one read.
+
+No procedure clears the flag: reset it before the next call, or the next `bring_up` ends
+`Cancelled` at entry.
 
 Dropping the future instead — losing a `select!`, hitting a `timeout`, aborting the task —
 stops the procedure at whichever `.await` it was suspended on, and a dropped future cannot
@@ -172,8 +182,12 @@ backend is synchronous: run spiritlevel's sync `TmdsLink` on a thread of its own
 With the `culvert-async` feature, `TmdsScdc` is implemented for culvert-async's client
 `Scdc<T>` over any async `ScdcTransport`, and for a mutable borrow of it, so one client
 serves SCDC setup, FRL training and TMDS bring-up in turn. Errors are spiritlevel's
-`CulvertError`, the type spiritlevel's own culvert adapter returns. In code generic over
-`T: SendScdcTransport` that names `Scdc<T>`, the futures are `Send` already. Code bounded
+`CulvertError`, the type spiritlevel's own culvert adapter returns. The client has methods
+of its own named like five of the trait's (`read_tmds_config`, `write_tmds_config`,
+`update_tmds_config`, `read_sink_version`, `write_source_version`), which a method call
+picks over the trait's: call the trait's as `TmdsScdc::read_tmds_config(&mut scdc)`. In
+code generic over `T: SendScdcTransport` that names `Scdc<T>`, the futures are `Send`
+already. Code bounded
 by `S: SendTmdsScdc` cannot take `Scdc<T>` itself; until culvert-async's planned `Send`
 wrapper is supported (see the [roadmap](doc/roadmap.md)), it wraps the client in a local
 type that implements `SendTmdsScdc` by forwarding to `Scdc<T>`.

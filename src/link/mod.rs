@@ -210,11 +210,13 @@ impl<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel> TmdsLink<S, P, K, D
     }
 
     /// Restores the sink's `TMDS_Config` on the running link `link` without a new bring-up;
-    /// see [`procedure::quick_restore`], which says which settings of `config` it reads and
-    /// where the cancel flag is read.
+    /// see [`procedure::quick_restore`], which says which settings of `config` it reads.
     ///
-    /// Stop it through the cancel flag, never by dropping its future. After a dropped one,
-    /// call it again, or [`tear_down`](Self::tear_down) with the same `link`.
+    /// The cancel flag stops only its scrambling check, read before each of the check's
+    /// reads: the write and the scrambler call always run, and a cancelled check is
+    /// `CheckResult::Cancelled`, with the link left running. Never stop it by dropping its
+    /// future; after a dropped one, call [`tear_down`](Self::tear_down) with the same `link`
+    /// before anything else, or call `quick_restore` again.
     ///
     /// # Errors
     ///

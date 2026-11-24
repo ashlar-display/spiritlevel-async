@@ -230,14 +230,22 @@ twins, with a clock and a flag that are `Send` but not `Sync`.
 ### Cancellation
 
 A caller stops a running procedure through its `Cancel` flag, never by dropping its future.
-The flag is read where spiritlevel says: at entry, before each SCDC step, before each slice
-of a wait and before each read of the check. A bring-up it stops ends
-`BringUpOutcome::Cancelled`: seen at entry, before any I/O, with nothing to undo
-(`Cleanup::Skipped`); anywhere else, after the tear-down it carries. No procedure clears
-the flag: the caller resets it before its next call, or that call ends `Cancelled` at
-entry. A procedure stops within one `check_interval` of the flag being set, plus the
-longest single call of a part and the tear-down, which is why every call must be bounded
-("The async `TmdsScdc`").
+Each procedure reads the flag where spiritlevel says:
+
+- **Bring-up:** at entry, before each SCDC step, before each slice of a wait and before
+  each read of the check. A bring-up it stops ends `BringUpOutcome::Cancelled`: seen at
+  entry, before any I/O, with nothing to undo (`Cleanup::Skipped`); anywhere else, after the
+  tear-down it carries.
+- **Quick restore:** only before each read of its check, so the write and the scrambler
+  call always run, and on a plain link, which has no check, never. A cancelled check is
+  `CheckResult::Cancelled`, with the link left running.
+- **Tear-down and the reconnect check:** never; the tear-down is the recovery, and the
+  check is one read.
+
+No procedure clears the flag: the caller resets it before its next call, or the next
+bring-up ends `Cancelled` at entry. A bring-up stops within one `check_interval` of the
+flag being set, plus the longest single call of a part and the tear-down, which is why
+every call must be bounded ("The async `TmdsScdc`").
 
 Dropping the future instead — racing it with `select`, wrapping it in a timeout, aborting
 its task — stops the procedure at whichever `.await` it was suspended on: the sink may hold
@@ -267,6 +275,14 @@ for culvert's client. Its error is spiritlevel's `CulvertError<E>`, wrapping cul
 `ScdcError<E>`: its kind is the transport's own for a transport error and `Unsupported`
 for a request culvert refuses. `update_tmds_config` is culvert-async's read-modify-write,
 and the bytes read reach `TmdsConfigReading::raw` and `ScramblingStatus::raw`.
+
+culvert-async's `Scdc<T>` has inherent methods named like five of the trait's
+(`read_tmds_config`, `write_tmds_config`, `update_tmds_config`, `read_sink_version`,
+`write_source_version`), with culvert's types. A method call picks an inherent method over
+a trait's, so with `TmdsScdc` in scope `scdc.read_tmds_config()` still returns culvert's
+reading, and `scdc.write_tmds_config(sink_config)` does not type-check. Code that means the
+trait's calls it through the trait, `TmdsScdc::read_tmds_config(&mut scdc)`, as the driver
+does.
 
 ```rust
 impl<T: ScdcTransport> TmdsScdc for Scdc<T> { type Error = CulvertError<T::Error>; … }
