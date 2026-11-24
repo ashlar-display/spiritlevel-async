@@ -25,9 +25,9 @@ steps and record the same events given the same I/O, and every fix reaches both.
 
 ## Status
 
-Built: the async `TmdsScdc` trait and its `Send` twin, the `TmdsLink` driver with all four
-procedures, the culvert-async adapter, and the re-exports. Not yet released; see the
-[roadmap](doc/roadmap.md) for what is under consideration.
+The `TmdsLink` driver runs all four of spiritlevel's procedures, over the async `TmdsScdc`
+trait and its `Send` twin, with the culvert-async adapter behind a feature. What is under
+consideration is on the [roadmap](doc/roadmap.md).
 
 ## Usage
 
@@ -37,50 +37,144 @@ cargo add spiritlevel-async
 
 Choose the link with spiritlevel's `TmdsLinkParams::choose` (re-exported here), then bring
 it up over the parts: the sink's SCDC (`TmdsScdc`, implemented for culvert-async's client
-by the `culvert-async` feature), an async `TmdsPhy`, a `Clock` and an async `Delay`:
+by the `culvert-async` feature), an async `TmdsPhy`, a `Clock` and an async `Delay`. Here
+the parts are doubles (hidden), each run answering at once, so a one-poll `block_on` runs
+the example; on hardware, the executor awaits it:
 
 ```rust
 // spiritlevel-async re-exports the spiritlevel and hdmi-hal-async types its API uses, so
 // it is the only dependency.
 use spiritlevel_async::{
-    BringUpConfig, BringUpOutcome, CheckResult, Clock, ColorBitDepth, ColorFormat, Delay,
-    SinkPresence, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, TmdsLink, TmdsLinkParams,
-    TmdsPhy, TmdsPolicy, TmdsScdc, TmdsVideo,
+    BringUpConfig, BringUpOutcome, Cancel, CheckResult, Clock, ColorBitDepth, ColorFormat,
+    Delay, SinkPresence, SinkTmdsFacts, SourceTmdsFacts, TearDownConfig, TmdsLink,
+    TmdsLinkParams, TmdsPhy, TmdsPolicy, TmdsScdc, TmdsVideo,
 };
+# use core::cell::Cell;
+# use core::sync::atomic::AtomicBool;
+# use core::time::Duration;
+# use spiritlevel_async::{
+#     DdcErrorKind, ScramblingStatus, SinkTmdsConfig, TmdsConfigReading, TmdsPhyCapabilities,
+#     TmdsPhyConfig, Timestamp, UpdateError,
+# };
 
-/// Brings up 4K60 RGB over TMDS, then stops it again.
-async fn show<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay>(
-    scdc: S,
-    phy: P,
-    clock: K,
-    delay: D,
+/// How a bring-up went.
+#[derive(Debug, PartialEq)]
+enum Shown {
+    /// Up, and whether the sink reports scrambled TMDS.
+    Up { scrambling_seen: bool },
+    /// Stopped by the cancel flag.
+    Cancelled,
+    /// A step failed; the bring-up's own tear-down followed.
+    Failed,
+    /// No link for this video on this sink and source.
+    Unsupported,
+}
+
+/// Brings up 4K60 RGB over TMDS, and stops it again once it is up.
+async fn show<S: TmdsScdc, P: TmdsPhy, K: Clock, D: Delay, X: Cancel>(
+    tmds: &mut TmdsLink<S, P, K, D, X>,
     sink: SinkTmdsFacts,
-) {
+) -> Shown {
     // The link is chosen for the rate the video gives; bring-up refuses any other.
     let video = TmdsVideo::new(594_000, ColorBitDepth::Depth8, ColorFormat::Rgb444);
     let Some(rate_khz) = video.character_rate_khz() else {
-        return; // a video TMDS cannot carry
+        return Shown::Unsupported; // a video TMDS cannot carry
     };
-    let source = SourceTmdsFacts::from(&phy.capabilities());
+    let source = SourceTmdsFacts::from(&tmds.phy().capabilities());
     let Ok(link) = TmdsLinkParams::choose(rate_khz, sink, source, TmdsPolicy::DEFAULT) else {
-        return; // a rate this sink and source cannot carry
+        return Shown::Unsupported; // a rate this sink and source cannot carry
     };
 
-    let mut tmds = TmdsLink::new(scdc, phy, clock, delay);
     match tmds.bring_up(&link, video, &BringUpConfig::DEFAULT).await {
         Ok(BringUpOutcome::Up(up)) => {
-            // Whether the sink reports scrambled TMDS, and what went wrong without
-            // stopping the bring-up.
-            let _seen = up.check.result == CheckResult::Set;
+            // What went wrong without stopping the bring-up, if anything.
             for _warning in up.warnings.iter_warnings() {}
+            let _ = tmds
+                .tear_down(&link, &TearDownConfig::DEFAULT, SinkPresence::Present)
+                .await;
+            Shown::Up {
+                scrambling_seen: up.check.result == CheckResult::Set,
+            }
         }
-        Ok(_cancelled) => {} // the cancel flag (`with_cancel`); never without one
-        Err(_error) => {}    // the step that failed, and the tear-down that followed
+        Ok(_cancelled) => Shown::Cancelled, // the cancel flag (`with_cancel`)
+        Err(_error) => Shown::Failed,       // which step, and how the tear-down went
     }
-    let _ = tmds
-        .tear_down(&link, &TearDownConfig::DEFAULT, SinkPresence::Present)
-        .await;
 }
+# // Doubles that answer at once: a sink with `TMDS_Config` and `Scrambling_Status`, a PHY
+# // that fails `configure` when told to, and one value as clock and delay.
+# struct Sink { tmds_config: SinkTmdsConfig }
+# impl TmdsScdc for Sink {
+#     type Error = DdcErrorKind;
+#     async fn write_tmds_config(&mut self, c: SinkTmdsConfig) -> Result<(), DdcErrorKind> {
+#         self.tmds_config = c;
+#         Ok(())
+#     }
+#     async fn update_tmds_config(&mut self, c: SinkTmdsConfig) -> Result<(), UpdateError<DdcErrorKind>> {
+#         self.tmds_config = c;
+#         Ok(())
+#     }
+#     async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, DdcErrorKind> {
+#         let c = self.tmds_config;
+#         Ok(TmdsConfigReading::new(c, u8::from(c.scrambling_enable) | u8::from(c.high_tmds_clock_ratio) << 1))
+#     }
+#     async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, DdcErrorKind> {
+#         let set = self.tmds_config.scrambling_enable;
+#         Ok(ScramblingStatus::new(set, u8::from(set)))
+#     }
+#     async fn read_sink_version(&mut self) -> Result<u8, DdcErrorKind> { Ok(1) }
+#     async fn write_source_version(&mut self, _: u8) -> Result<(), DdcErrorKind> { Ok(()) }
+#     async fn clear_frl_rate(&mut self) -> Result<(), DdcErrorKind> { Ok(()) }
+#     async fn clear_flt_update(&mut self) -> Result<bool, UpdateError<DdcErrorKind>> { Ok(false) }
+# }
+# struct Phy { fail: bool }
+# impl TmdsPhy for Phy {
+#     type Error = ();
+#     fn capabilities(&self) -> TmdsPhyCapabilities {
+#         TmdsPhyCapabilities::new(600_000).with_scrambling(true)
+#     }
+#     async fn configure(&mut self, _: TmdsPhyConfig) -> Result<(), ()> {
+#         if self.fail { Err(()) } else { Ok(()) }
+#     }
+#     async fn set_scrambling(&mut self, _: bool) -> Result<(), ()> { Ok(()) }
+#     async fn start_output(&mut self) -> Result<(), ()> { Ok(()) }
+#     async fn stop_output(&mut self) -> Result<(), ()> { Ok(()) }
+# }
+# #[derive(Default)]
+# struct Time(Cell<u64>);
+# impl Clock for &Time {
+#     fn now(&self) -> Timestamp { Timestamp::from_micros(self.0.get()) }
+# }
+# impl Delay for &Time {
+#     async fn delay(&mut self, d: Duration) {
+#         self.0.set(self.0.get() + u64::try_from(d.as_micros()).unwrap());
+#     }
+# }
+# /// Polls a future whose I/O completes at once.
+# fn block_on<F: core::future::Future>(future: F) -> F::Output {
+#     let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+#     match core::pin::pin!(future).poll(&mut cx) {
+#         core::task::Poll::Ready(output) => output,
+#         core::task::Poll::Pending => unreachable!("the doubles never wait"),
+#     }
+# }
+# fn sink() -> Sink { Sink { tmds_config: SinkTmdsConfig::new(false, false) } }
+
+// A sink with SCDC that takes scrambling, without low-rate scrambling.
+let facts = SinkTmdsFacts::new(true, true, false);
+let time = Time::default();
+
+let mut tmds = TmdsLink::new(sink(), Phy { fail: false }, &time, &time);
+assert_eq!(block_on(show(&mut tmds, facts)), Shown::Up { scrambling_seen: true });
+
+// A flag already set: the bring-up stops at entry.
+let unplugged = AtomicBool::new(true);
+let mut tmds =
+    TmdsLink::new(sink(), Phy { fail: false }, &time, &time).with_cancel(&unplugged);
+assert_eq!(block_on(show(&mut tmds, facts)), Shown::Cancelled);
+
+// A PHY that refuses its configuration.
+let mut tmds = TmdsLink::new(sink(), Phy { fail: true }, &time, &time);
+assert_eq!(block_on(show(&mut tmds, facts)), Shown::Failed);
 ```
 
 The procedures, their settings, outcomes and events are spiritlevel's: see
@@ -247,8 +341,9 @@ crate already on crates.io; the token is revoked afterwards. Later releases are 
 through crates.io
 [trusted publishing](https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html):
 the publish workflow obtains a short-lived token via OpenID Connect instead of using a
-stored API token, and crates.io rejects uploads made with an API token for this crate; the
-badge above shows whether that setting is on. Each version's publishing details, including
+stored API token. Once trusted publishing is set up, the crate is switched to trusted
+publishing only, so that crates.io rejects uploads made with an API token for it; the badge
+above shows whether that setting is on. Each version's publishing details, including
 the workflow run and commit, are available from the crates.io API:
 
 ```sh
