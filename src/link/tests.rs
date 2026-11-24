@@ -739,3 +739,74 @@ fn quick_restore_passes_the_sinks_error_through() {
     );
     assert!(link.phy().output, "no tear-down: the link was running");
 }
+
+// The `Send` twin through the driver.
+
+/// An SCDC implementation of the `Send` twin alone, answering `TMDS_Config` with scrambling
+/// set and the ratio clear; the reconnect check makes no other call.
+#[derive(Default)]
+struct TwinSink {
+    reads: u32,
+}
+
+impl crate::SendTmdsScdc for TwinSink {
+    type Error = DdcErrorKind;
+
+    async fn write_tmds_config(&mut self, _: SinkTmdsConfig) -> Result<(), DdcErrorKind> {
+        unreachable!("the reconnect check only reads")
+    }
+
+    async fn update_tmds_config(
+        &mut self,
+        _: SinkTmdsConfig,
+    ) -> Result<(), UpdateError<DdcErrorKind>> {
+        unreachable!("the reconnect check only reads")
+    }
+
+    async fn read_tmds_config(&mut self) -> Result<TmdsConfigReading, DdcErrorKind> {
+        self.reads += 1;
+        Ok(TmdsConfigReading::new(
+            SinkTmdsConfig::new(true, false),
+            0xF1,
+        ))
+    }
+
+    async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, DdcErrorKind> {
+        unreachable!("the reconnect check reads only TMDS_Config")
+    }
+
+    async fn read_sink_version(&mut self) -> Result<u8, DdcErrorKind> {
+        unreachable!("the reconnect check reads only TMDS_Config")
+    }
+
+    async fn write_source_version(&mut self, _: u8) -> Result<(), DdcErrorKind> {
+        unreachable!("the reconnect check only reads")
+    }
+
+    async fn clear_frl_rate(&mut self) -> Result<(), DdcErrorKind> {
+        unreachable!("the reconnect check only reads")
+    }
+
+    async fn clear_flt_update(&mut self) -> Result<bool, UpdateError<DdcErrorKind>> {
+        unreachable!("the reconnect check only reads")
+    }
+}
+
+#[test]
+fn a_twin_implementation_drives_the_driver() {
+    let log = Log::default();
+    let time = SimTime::at(&log, 0);
+    // `TwinSink` implements only the twin: the driver takes it as a `TmdsScdc` through the
+    // blanket implementation.
+    let mut link = TmdsLink::new(TwinSink::default(), Phy::new(&log), &time, &time);
+    let params = scrambled();
+
+    let (result, _) = run(link.check_reconnect(&params, params.sink()));
+
+    // The sink holds scrambling without the ratio, not what this link needs.
+    let ReconnectCheck::Lost { read, .. } = result else {
+        panic!("not lost: {result:?}");
+    };
+    assert_eq!(read.raw, 0xF1, "the twin's reading, passed through");
+    assert_eq!(link.scdc().reads, 1);
+}

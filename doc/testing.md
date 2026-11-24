@@ -20,6 +20,8 @@ procedures run over I/O that really suspends.
   nothing done; set during one, it ends `Cancelled` after its tear-down.
 - **The parts between procedures:** `with_cancel`, `into_parts` and the accessors return
   what was given.
+- **The `Send` twin through the driver:** an SCDC implementation of `SendTmdsScdc` alone
+  drives `TmdsLink` as a `TmdsScdc`, through the blanket implementation.
 
 ## The SCDC traits (`src/scdc.rs`)
 
