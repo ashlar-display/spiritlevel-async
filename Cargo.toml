@@ -19,12 +19,18 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["display-types"]
 display-types = ["spiritlevel/display-types"]
-culvert-async = ["dep:culvert-async"]
+culvert-async = ["dep:culvert-async", "spiritlevel/culvert"]
 
 [dependencies]
 spiritlevel = { version = "0.2", default-features = false }
 hdmi-hal-async = { version = "0.4", default-features = false }
 culvert-async = { version = "0.4.1", default-features = false, optional = true }
+
+# The tests that sync and async bring-up agree (tests/simulated_sink.rs, culvert-async
+# feature) run both drivers against maquette's simulated sink, with culvert's register names.
+[dev-dependencies]
+culvert = { version = "0.4", default-features = false }
+maquette = { version = "0.1", features = ["async", "std"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
