@@ -53,7 +53,8 @@ is fine.
 - Tests are expected for new async driver logic (the procedures themselves are
   spiritlevel's, and tested there); see [`doc/testing.md`](doc/testing.md) for the pattern.
 - CI must be green before a PR can merge: fmt, clippy, docs, the tests in every feature
-  set, the bare-metal `no_std` builds, the same tests and builds on the MSRV (Rust 1.85),
+  set, the bare-target `no_std` builds, the tests and the bare-target builds without default
+  features on the MSRV (Rust 1.85),
   and coverage must not drop more than 0.1 percentage points below the baseline (stored in
   `.coverage-baseline`).
 

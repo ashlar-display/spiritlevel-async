@@ -416,8 +416,9 @@ src/
 
 `#![no_std]` without `alloc` in every build, and `#![forbid(unsafe_code)]`: the procedures'
 outcomes use fixed storage and their events a callback, as in spiritlevel. CI builds the
-crate for a bare target (`thumbv7em-none-eabi`) with and without default features and with
-`culvert-async`, and checks the MSRV (Rust 1.85).
+crate for the bare targets (`thumbv7em-none-eabi`, `x86_64-unknown-uefi` and
+`aarch64-unknown-uefi`) with and without default features and with `culvert-async`, and
+checks the MSRV (Rust 1.85).
 
 ---
 

@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TmdsLink`, the async driver: spiritlevel's bring-up, tear-down, reconnect check and
   quick restore over an async `TmdsScdc`, `TmdsPhy` and `Delay`, a `Clock` and an optional
   `Cancel` flag, each in a plain and a `_with_events` form, with `with_cancel`,
-  `into_parts` and accessors for the parts. Its futures are `Send` when the parts are
-  bounded by the `Send` twins.
+  `into_parts` and accessors for the parts. Its futures are `Send` when the SCDC, PHY and
+  delay are bounded by the `Send` twins and the clock, the cancel flag and the event
+  callback are `Send`.
 - The `culvert-async` feature: `TmdsScdc` for culvert-async's `Scdc<T>` and `&mut Scdc<T>`,
   with errors in spiritlevel's `CulvertError`.
 - Re-exports of spiritlevel's link parameters, settings, outcomes and events, and of the

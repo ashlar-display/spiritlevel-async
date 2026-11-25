@@ -68,7 +68,8 @@ reconnect check and the quick restore.
 ## CI
 
 CI runs the tests with default features, without them and with `culvert-async`, builds the
-crate for a bare target (`thumbv7em-none-eabi`) in the same feature sets, runs the same
-tests and builds on the MSRV (Rust 1.85), and measures line coverage with the adapter
-included; it fails if coverage drops more than 0.1 percentage points below the baseline in
-`.coverage-baseline`. The commands are in [setup](setup.md).
+crate for the bare targets (`thumbv7em-none-eabi`, `x86_64-unknown-uefi` and
+`aarch64-unknown-uefi`) in the same feature sets, runs the tests in each feature set and
+the bare-target builds without default features on the MSRV (Rust 1.85), and measures line
+coverage with the adapter included; it fails if coverage drops more than 0.1 percentage
+points below the baseline in `.coverage-baseline`. The commands are in [setup](setup.md).

@@ -22,7 +22,8 @@
 //!
 //! The plain traits promise nothing about their futures. Each has a `Send` twin —
 //! [`SendTmdsScdc`], [`SendTmdsPhy`], [`SendDelay`] — and in code bounded by the twins
-//! alone, with a clock and a flag that are `Send`, every procedure's future is `Send`, so it
+//! alone, with a clock and a flag that are `Send` (and, for the `_with_events` forms, a
+//! `Send` callback), every procedure's future is `Send`, so it
 //! can be spawned on a multi-threaded executor.
 //!
 //! # Features

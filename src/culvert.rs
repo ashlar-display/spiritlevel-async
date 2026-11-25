@@ -35,7 +35,8 @@ fn update_error<E>(error: ReadModifyWriteError<E>) -> UpdateError<CulvertError<E
 /// The plain trait, not the twin: implementing both for one type would conflict with the
 /// blanket implementation. Its futures are `Send` all the same where the compiler can see
 /// the transport: in code generic over `T: SendScdcTransport` that names `Scdc<T>`, the
-/// driver's futures are `Send` under the conditions [`TmdsLink`](crate::TmdsLink) gives.
+/// driver's futures are `Send` under the conditions the crate root gives ("`Send`
+/// futures").
 ///
 /// The client has inherent methods named like five of these (`read_tmds_config`,
 /// `write_tmds_config`, `update_tmds_config`, `read_sink_version`, `write_source_version`),
@@ -157,7 +158,31 @@ mod tests {
     use culvert_async::{ScdcError, SendScdcTransport};
 
     use super::*;
+    use culvert::codec::{
+        self, CONFIG_1, SCRAMBLER_STATUS, SINK_VERSION, SOURCE_VERSION, TMDS_CONFIG, UPDATE_0,
+    };
+
     use crate::{DdcError, DdcErrorKind, NoAcknowledgeSource};
+
+    // The register addresses and bit layouts below are culvert's register map
+    // (`culvert::codec`), which the client encodes and decodes with.
+
+    /// `Update_0` with only `FLT_update` set.
+    fn flt_update() -> u8 {
+        codec::encode_clear_update_flags(ClearableUpdateFlags::new(
+            false, false, false, false, true, false,
+        ))
+    }
+
+    /// `Update_0` with two other flags set, `Status_Update` and `CED_Update`.
+    fn other_flags() -> u8 {
+        codec::encode_clear_update_flags(ClearableUpdateFlags::new(
+            true, true, false, false, false, false,
+        ))
+    }
+
+    /// A `TMDS_Config` byte with bits set outside the two the trait writes.
+    const TMDS_CONFIG_OTHER_BITS: u8 = 0xF0;
 
     /// Polls a future whose I/O completes at once.
     fn ready<F: Future>(future: F) -> F::Output {
@@ -170,7 +195,8 @@ mod tests {
     const NACK: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address);
 
     /// An async transport over a register file, failing every transfer from `fail_from` on
-    /// with a NACK. `Update_0` is write-1-to-clear, as on a sink. Implemented as the twin, so
+    /// with a NACK. `Update_0` is write-1-to-clear, as culvert's register map has it
+    /// (`clear_update_flags`). Implemented as the twin, so
     /// it is `Sync` as a `Send` caller's transport is, and serves the plain implementations
     /// through hdmi-hal-async's blanket implementation.
     struct Sink {
@@ -206,8 +232,8 @@ mod tests {
 
         async fn write(&mut self, reg: u8, value: u8) -> Result<(), DdcErrorKind> {
             self.transfer()?;
-            if reg == 0x10 {
-                self.regs[0x10] &= !value;
+            if reg == UPDATE_0 {
+                self.regs[usize::from(UPDATE_0)] &= !value;
             } else {
                 self.regs[usize::from(reg)] = value;
             }
@@ -225,11 +251,11 @@ mod tests {
     /// A sink with each register the trait touches set to a value that tells it apart.
     fn sink() -> Sink {
         let mut sink = Sink::new();
-        sink.regs[0x01] = 1;
-        sink.regs[0x10] = 0x23;
-        sink.regs[0x20] = 0xF0;
-        sink.regs[0x21] = 0x81;
-        sink.regs[0x31] = 0x53;
+        sink.regs[usize::from(SINK_VERSION)] = 1;
+        sink.regs[usize::from(UPDATE_0)] = flt_update() | other_flags();
+        sink.regs[usize::from(TMDS_CONFIG)] = TMDS_CONFIG_OTHER_BITS;
+        sink.regs[usize::from(SCRAMBLER_STATUS)] = 0x81;
+        sink.regs[usize::from(CONFIG_1)] = 0x53;
         sink
     }
 
@@ -247,19 +273,42 @@ mod tests {
         ready(scdc.update_tmds_config(SinkTmdsConfig::new(true, true))).unwrap();
         let read = ready(scdc.read_tmds_config()).unwrap();
         assert_eq!(read.config, SinkTmdsConfig::new(true, true));
-        assert_eq!(read.raw, 0xF3, "the other bits kept, the byte reported");
+        let both = TmdsConfig {
+            scrambling_enable: true,
+            high_tmds_clock_ratio: true,
+        };
+        assert_eq!(
+            read.raw,
+            codec::update_tmds_config_byte(TMDS_CONFIG_OTHER_BITS, both),
+            "the other bits kept, the byte reported"
+        );
         let status = ready(scdc.read_scrambling_status()).unwrap();
-        assert!(status.set);
+        assert_eq!(
+            status.set,
+            codec::decode_scrambler_status(0x81).scrambling_active
+        );
         assert_eq!(status.raw(), 0x81);
         ready(scdc.write_tmds_config(SinkTmdsConfig::new(false, false))).unwrap();
     }
 
     /// The registers `exercise` leaves behind.
     fn assert_exercised(sink: &Sink) {
-        assert_eq!(sink.regs[0x02], 1, "Source_Version");
-        assert_eq!(sink.regs[0x31], 0, "Config_1 cleared");
-        assert_eq!(sink.regs[0x10], 0x03, "only FLT_update cleared");
-        assert_eq!(sink.regs[0x20], 0x00, "TMDS_Config written whole");
+        let neither = TmdsConfig {
+            scrambling_enable: false,
+            high_tmds_clock_ratio: false,
+        };
+        assert_eq!(sink.regs[usize::from(SOURCE_VERSION)], 1, "Source_Version");
+        assert_eq!(sink.regs[usize::from(CONFIG_1)], 0, "Config_1 cleared");
+        assert_eq!(
+            sink.regs[usize::from(UPDATE_0)],
+            other_flags(),
+            "only FLT_update cleared"
+        );
+        assert_eq!(
+            sink.regs[usize::from(TMDS_CONFIG)],
+            codec::encode_tmds_config(neither),
+            "TMDS_Config written whole"
+        );
     }
 
     #[test]
@@ -296,7 +345,7 @@ mod tests {
 
         // The read passes, the write fails.
         let mut after_read = Sink::new();
-        after_read.regs[0x10] = 0x20;
+        after_read.regs[usize::from(UPDATE_0)] = flt_update();
         after_read.fail_from = 1;
         let mut scdc = Scdc::new(after_read);
         assert!(matches!(
@@ -304,14 +353,18 @@ mod tests {
             Err(UpdateError::Write(e)) if e.kind() == NACK
         ));
         let mut after_read = Sink::new();
-        after_read.regs[0x20] = 0x80;
+        after_read.regs[usize::from(TMDS_CONFIG)] = TMDS_CONFIG_OTHER_BITS;
         after_read.fail_from = 1;
         let mut scdc = Scdc::new(after_read);
         assert!(matches!(
             ready(TmdsScdc::update_tmds_config(&mut scdc, SinkTmdsConfig::new(true, true))),
             Err(UpdateError::Write(e)) if e.kind() == NACK
         ));
-        assert_eq!(scdc.into_transport().regs[0x20], 0x80, "nothing written");
+        assert_eq!(
+            scdc.into_transport().regs[usize::from(TMDS_CONFIG)],
+            TMDS_CONFIG_OTHER_BITS,
+            "nothing written"
+        );
     }
 
     #[test]

@@ -100,11 +100,15 @@ impl Log {
     }
 }
 
-/// The sink's registers that matter here, with `TMDS_Config` as bits 0 (scrambling) and 1
-/// (clock ratio).
+/// `TMDS_Config` with neither bit set, and with both.
+const NEITHER: SinkTmdsConfig = SinkTmdsConfig::new(false, false);
+const BOTH: SinkTmdsConfig = SinkTmdsConfig::new(true, true);
+
+/// The sink's registers that matter here. `TMDS_Config` is held as the two bits the trait
+/// reads and writes; the byte a reading reports is culvert's encoding of them.
 struct Sink<'a> {
     log: &'a Log,
-    tmds_config: u8,
+    tmds_config: SinkTmdsConfig,
     sink_version: u8,
     source_version: u8,
     flt_update: bool,
@@ -117,7 +121,7 @@ impl<'a> Sink<'a> {
     fn new(log: &'a Log) -> Self {
         Self {
             log,
-            tmds_config: 0,
+            tmds_config: NEITHER,
             sink_version: 1,
             source_version: 0,
             flt_update: false,
@@ -130,8 +134,7 @@ impl<'a> Sink<'a> {
         if let Some(error) = self.fail_tmds_config {
             return Err(error);
         }
-        self.tmds_config =
-            u8::from(config.scrambling_enable) | (u8::from(config.high_tmds_clock_ratio) << 1);
+        self.tmds_config = config;
         Ok(())
     }
 }
@@ -157,11 +160,12 @@ impl TmdsScdc for Sink<'_> {
         if let Some(error) = self.fail_tmds_config {
             return Err(error);
         }
-        let raw = self.tmds_config;
-        Ok(TmdsConfigReading::new(
-            SinkTmdsConfig::new(raw & 1 != 0, raw & 2 != 0),
-            raw,
-        ))
+        let config = self.tmds_config;
+        let raw = culvert::codec::encode_tmds_config(culvert::TmdsConfig {
+            scrambling_enable: config.scrambling_enable,
+            high_tmds_clock_ratio: config.high_tmds_clock_ratio,
+        });
+        Ok(TmdsConfigReading::new(config, raw))
     }
 
     async fn read_scrambling_status(&mut self) -> Result<ScramblingStatus, DdcErrorKind> {
@@ -380,7 +384,7 @@ fn tear_down_clears_the_sink_and_stops_the_phy() {
     let log = Log::default();
     let time = SimTime::at(&log, 42);
     let mut sink = Sink::new(&log);
-    sink.tmds_config = 0x03;
+    sink.tmds_config = BOTH;
     let mut phy = Phy::new(&log);
     phy.output = true;
     phy.scrambling = true;
@@ -419,7 +423,7 @@ fn tear_down_clears_the_sink_and_stops_the_phy() {
     );
 
     let (sink, phy, ..) = link.into_parts();
-    assert_eq!(sink.tmds_config, 0);
+    assert_eq!(sink.tmds_config, NEITHER);
     assert!(!phy.output && !phy.scrambling);
 }
 
@@ -429,7 +433,7 @@ fn the_plain_tear_down_runs_whatever_the_cancel_flag() {
     let time = SimTime::at(&log, 0);
     let flag = AtomicBool::new(true);
     let mut sink = Sink::new(&log);
-    sink.tmds_config = 0x03;
+    sink.tmds_config = BOTH;
     let mut phy = Phy::new(&log);
     phy.output = true;
     let mut link = TmdsLink::new(sink, phy, &time, &time).with_cancel(&flag);
@@ -440,7 +444,7 @@ fn the_plain_tear_down_runs_whatever_the_cancel_flag() {
     assert_eq!(result.unwrap().sink, SinkClear::NotRequested);
     assert_eq!(log.calls(), [Call::StopOutput]);
     assert!(!link.phy().output);
-    assert_eq!(link.scdc().tmds_config, 0x03, "the sink is not written");
+    assert_eq!(link.scdc().tmds_config, BOTH, "the sink is not written");
 }
 
 #[test]
@@ -448,7 +452,7 @@ fn tear_down_passes_the_parts_errors_through() {
     let log = Log::default();
     let time = SimTime::at(&log, 0);
     let mut sink = Sink::new(&log);
-    sink.tmds_config = 0x03;
+    sink.tmds_config = BOTH;
     sink.fail_tmds_config = Some(DdcErrorKind::Detached);
     let mut phy = Phy::new(&log);
     phy.output = true;
@@ -519,7 +523,7 @@ fn bring_up_on_a_scrambled_link() {
     );
 
     let (sink, phy, ..) = link.into_parts();
-    assert_eq!(sink.tmds_config, 0x03);
+    assert_eq!(sink.tmds_config, BOTH);
     assert_eq!(sink.source_version, 1);
     assert!(phy.output && phy.scrambling);
     assert_eq!(
@@ -548,7 +552,7 @@ fn the_plain_bring_up_on_a_plain_link() {
     assert!(calls.contains(&Call::ReadSinkVersion));
     let (sink, phy, ..) = link.into_parts();
     assert_eq!(sink.source_version, 1, "written after the sink reported 1");
-    assert_eq!(sink.tmds_config & 0x03, 0, "neither bit set");
+    assert_eq!(sink.tmds_config, NEITHER, "neither bit set");
     assert!(phy.output && !phy.scrambling);
     assert_eq!(
         phy.configured.map(|c| c.clock_ratio),
@@ -609,7 +613,7 @@ fn check_reconnect_reads_the_sink_once() {
     let log = Log::default();
     let time = SimTime::at(&log, 0);
     let mut sink = Sink::new(&log);
-    sink.tmds_config = 0x03;
+    sink.tmds_config = BOTH;
     let mut link = TmdsLink::new(sink, Phy::new(&log), &time, &time);
     let params = scrambled();
 
@@ -623,12 +627,12 @@ fn check_reconnect_reads_the_sink_once() {
     assert!(!events.is_empty() && events.len() <= crate::MAX_RECONNECT_CHECK_EVENTS);
 
     // The sink lost its bits: reported with the byte read, nothing written.
-    link.scdc_mut().tmds_config = 0x00;
+    link.scdc_mut().tmds_config = NEITHER;
     let (result, _) = run(link.check_reconnect(&params, params.sink()));
     let ReconnectCheck::Lost { read, .. } = result else {
         panic!("not lost: {result:?}");
     };
-    assert_eq!(read.raw, 0x00);
+    assert_eq!(read.config, NEITHER);
     assert_eq!(log.calls(), [Call::ReadTmdsConfig, Call::ReadTmdsConfig]);
 }
 
@@ -695,7 +699,7 @@ fn quick_restore_rewrites_the_sink_with_the_output_running() {
         "the output keeps running at its rate"
     );
     let (sink, phy, ..) = link.into_parts();
-    assert_eq!(sink.tmds_config, 0x03);
+    assert_eq!(sink.tmds_config, BOTH);
     assert!(phy.output && phy.scrambling);
 }
 
@@ -712,7 +716,7 @@ fn a_set_flag_stops_only_the_restores_check() {
     assert_eq!(result.unwrap().check.result, CheckResult::Cancelled);
     assert!(!log.calls().contains(&Call::ReadScramblingStatus));
     let (sink, phy, ..) = link.into_parts();
-    assert_eq!(sink.tmds_config, 0x03, "the write is made");
+    assert_eq!(sink.tmds_config, BOTH, "the write is made");
     assert!(phy.output && phy.scrambling, "the link is left running");
 }
 
