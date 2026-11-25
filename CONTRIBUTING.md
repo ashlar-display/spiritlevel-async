@@ -10,7 +10,7 @@ Relevant docs for contributors:
 - [`doc/testing.md`](doc/testing.md) — what the tests check and how CI runs them
 - [`doc/architecture.md`](doc/architecture.md) — role, scope, the async driver and its
   traits, `Send` futures, cancellation, and design principles
-- [`doc/roadmap.md`](doc/roadmap.md) — what is planned and under consideration
+- [`doc/roadmap.md`](doc/roadmap.md) — what is under consideration
 
 ## Issues and pull requests
 
@@ -37,11 +37,13 @@ is fine.
 - Keep `no_std` compatibility without `alloc`. The procedures, their configuration and
   their outcome types are spiritlevel's, defined once there; this crate adds the async
   driver and its traits, and changes no procedure.
-- Every trait has a `Send` twin, and the driver's futures are `Send` when every part is
-  one; the compile-time `Send` test covers each new method.
-- A claim about HDMI behaviour (a rule, a default, a threshold) cites at least two
-  independent public implementations (repository, commit, file and line). Where
-  implementations differ, the behaviour is a setting with the majority as default.
+- Every async trait has a `Send` twin, and the driver's futures are `Send` when every part
+  is one; the compile-time `Send` test covers each new method.
+- This crate makes no claim about HDMI behaviour of its own: a change to what a procedure
+  does, its settings or its defaults belongs in spiritlevel, where each such claim cites at
+  least two independent public implementations. Where these docs rely on one of those
+  claims (a default, a timing, when a step is needed), they point to spiritlevel's section
+  that cites it rather than repeating or restating it.
 
 ## Commit and PR expectations
 
@@ -51,7 +53,8 @@ is fine.
 - Tests are expected for new async driver logic (the procedures themselves are
   spiritlevel's, and tested there); see [`doc/testing.md`](doc/testing.md) for the pattern.
 - CI must be green before a PR can merge: fmt, clippy, docs, the tests in every feature
-  set, the bare-metal `no_std` builds, the same tests and builds on the MSRV (Rust 1.85),
+  set, the bare-target `no_std` builds, the tests and the bare-target builds without default
+  features on the MSRV (Rust 1.85),
   and coverage must not drop more than 0.1 percentage points below the baseline (stored in
   `.coverage-baseline`).
 
@@ -64,7 +67,16 @@ and uses their types in its API (spiritlevel's configuration, event and outcome 
 async PHY, clock and delay traits, and culvert-async's client). Their versions are
 therefore part of spiritlevel-async's API: moving to a breaking release of one of them is
 a breaking release of spiritlevel-async, unless the version requirement keeps accepting
-the old release as well. Other
+the old release as well.
+
+The `culvert-async` adapter returns culvert-async's errors in spiritlevel's `CulvertError`,
+which wraps culvert's `ScdcError`, so spiritlevel's culvert requirement and culvert-async's
+must resolve to the same culvert release series. The culvert-async requirement here
+therefore never accepts a culvert-async built on a culvert series that spiritlevel does not
+accept: moving to a new culvert series takes a spiritlevel release on it first, then a
+release of this crate requiring both.
+
+Other
 [Ashlar crates](https://ashlar-display.org/crates.html) depend on spiritlevel-async as a
 versioned crate dependency. Changes that add or modify public API must be merged, tagged,
 and published to crates.io before downstream crates can adopt them. The workflow is:

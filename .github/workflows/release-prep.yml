@@ -234,12 +234,6 @@ jobs:
         # the new package version; also acts as a quick compile sanity check.
         run: cargo check
 
-      - name: Refresh fuzz/Cargo.lock
-        # The fuzz crate is its own workspace with a tracked lock file, which records
-        # this crate's version through the path dependency. Update only that entry:
-        # a plain `cargo update` would also bump every fuzz dependency unreviewed.
-        run: cargo update --manifest-path fuzz/Cargo.toml -p maquette
-
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
@@ -249,7 +243,7 @@ jobs:
         run: |
           NEW="${{ steps.version.outputs.new }}"
           git checkout -b "release/v${NEW}"
-          git add Cargo.toml Cargo.lock fuzz/Cargo.lock CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "Release v${NEW}"
           git push origin "release/v${NEW}"
 
@@ -275,7 +269,7 @@ jobs:
           |---|---|
           | \`Cargo.toml\` | ${VERSION_CHANGE} |
           | \`CHANGELOG.md\` | \`[Unreleased]\` stamped with today's date |
-          | \`Cargo.lock\`, \`fuzz/Cargo.lock\` | regenerated |
+          | \`Cargo.lock\` | regenerated |
 
           Once CI passes and this PR merges, run the [Release Tag](${{ github.server_url }}/${{ github.repository }}/actions/workflows/release-tag.yml) workflow to push the tag and kick off publish.
           EOF
